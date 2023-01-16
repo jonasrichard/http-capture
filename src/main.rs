@@ -1,12 +1,17 @@
-use std::net::IpAddr;
+use std::{collections::HashMap, net::IpAddr};
 
-use etherparse::{IpHeader, Ipv6HeaderSlice, TcpHeader};
+use etherparse::{IpHeader, TcpHeader};
 use pcap::{Capture, Device};
 
 #[derive(Debug, PartialEq)]
 struct Endpoint {
     address: IpAddr,
     port: u16,
+}
+
+enum EndpointSide {
+    Source,
+    Destination,
 }
 
 #[derive(Debug)]
@@ -39,15 +44,22 @@ impl TcpStream {
         }
     }
 
-    fn same_parties(&self, other: &TcpStream) -> bool {
-        (self.source == other.source && self.destination == other.destination)
-            || (self.source == other.destination && self.destination == other.source)
+    fn same_parties(&self, other: &TcpStream) -> Option<EndpointSide> {
+        if self.source == other.source && self.destination == other.destination {
+            Some(EndpointSide::Source)
+        } else if self.source == other.destination && self.destination == other.source {
+            Some(EndpointSide::Destination)
+        } else {
+            None
+        }
     }
 }
 
 struct Streams {
     count: u32,
     streams: Vec<(u32, TcpStream)>,
+    requests: HashMap<u32, Vec<u8>>,
+    responses: HashMap<u32, Vec<u8>>,
 }
 
 impl Streams {
@@ -55,17 +67,28 @@ impl Streams {
         Self {
             count: 0u32,
             streams: vec![],
+            requests: HashMap::new(),
+            responses: HashMap::new(),
         }
     }
 
-    fn lookup_stream(&self, ep: &TcpStream) -> Option<u32> {
-        self.streams
-            .iter()
-            .find(|(_, st)| st.same_parties(ep))
-            .map(|s| s.0)
+    fn lookup_stream(&self, ep: &TcpStream) -> Option<(u32, EndpointSide)> {
+        for (index, stream) in &self.streams {
+            match stream.same_parties(ep) {
+                None => {}
+                Some(EndpointSide::Source) => {
+                    return Some((*index, EndpointSide::Source));
+                }
+                Some(EndpointSide::Destination) => {
+                    return Some((*index, EndpointSide::Destination));
+                }
+            }
+        }
+
+        None
     }
 
-    fn store(&mut self, stream: TcpStream) -> u32 {
+    fn store(&mut self, stream: TcpStream) -> (u32, EndpointSide) {
         match self.lookup_stream(&stream) {
             None => {
                 let num = self.count;
@@ -74,9 +97,41 @@ impl Streams {
 
                 self.count += 1;
 
-                num
+                (num, EndpointSide::Source)
             }
-            Some(num) => num,
+            Some(ep) => ep,
+        }
+    }
+
+    fn append_request_bytes(&mut self, index: u32, bytes: &[u8]) {
+        match self.requests.get_mut(&index) {
+            Some(request) => request.extend_from_slice(bytes),
+            None => {
+                self.requests.insert(index, bytes.to_vec());
+            }
+        }
+    }
+
+    fn append_response_bytes(&mut self, index: u32, bytes: &[u8]) {
+        match self.responses.get_mut(&index) {
+            Some(response) => response.extend_from_slice(bytes),
+            None => {
+                self.responses.insert(index, bytes.to_vec());
+            }
+        }
+    }
+
+    fn take_request(&mut self, index: u32) -> Vec<u8> {
+        match self.requests.remove(&index) {
+            Some(req) => req,
+            None => vec![],
+        }
+    }
+
+    fn take_response(&mut self, index: u32) -> Vec<u8> {
+        match self.responses.remove(&index) {
+            Some(resp) => resp,
+            None => vec![],
         }
     }
 }
@@ -107,20 +162,35 @@ fn main() {
             let (headers, _next_version, payload) =
                 IpHeader::from_slice(&packet.data[4..]).unwrap();
 
-            println!("Headers {:?}", headers);
+            //println!("Headers {:?}", headers);
 
             let (tcp, payload2) = TcpHeader::from_slice(&payload).unwrap();
 
-            println!("Tcp {:?} payload {:?}", tcp, payload2);
+            //println!("Tcp {:?} payload {:?}", tcp, payload2);
 
             let stream = TcpStream::from_headers(&headers, &tcp);
-            let stream_index = streams.store(stream);
+            let (index, side) = streams.store(stream);
 
-            println!("Stream index is {}", stream_index);
+            println!("Stream index is {}", index);
 
-            if payload2.len() > 0 {
-                println!("Payload: {}", String::from_utf8(payload2.into()).unwrap());
+            match side {
+                EndpointSide::Source => streams.append_request_bytes(index, payload2),
+                EndpointSide::Destination => streams.append_response_bytes(index, payload2),
             }
+
+            if tcp.fin {
+                let req = streams.take_request(index);
+
+                println!("Request: {}", String::from_utf8(req).unwrap());
+
+                let resp = streams.take_response(index);
+
+                println!("Response: {}", String::from_utf8(resp).unwrap());
+            }
+
+            //if payload2.len() > 0 {
+            //    println!("Payload: {}", String::from_utf8(payload2.into()).unwrap());
+            //}
 
             packet_count += 1;
             if packet_count > 50 {
