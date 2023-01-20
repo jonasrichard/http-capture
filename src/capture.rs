@@ -1,14 +1,14 @@
-use std::{collections::HashMap, net::IpAddr, sync::mpsc};
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    thread::{self, JoinHandle},
+};
 
+use crossbeam::channel::Sender;
 use etherparse::{IpHeader, TcpHeader};
 use pcap::{Capture, Device};
 
 use crate::ui::HttpStream;
-
-pub enum Command {
-    StartCapture(String),
-    StopCapture,
-}
 
 #[derive(Debug, PartialEq)]
 struct Endpoint {
@@ -143,22 +143,20 @@ impl Streams {
     }
 }
 
-pub fn control_loop(cmd: mpsc::Receiver<Command>, output: mpsc::Sender<HttpStream>) {
-    while let Ok(command) = cmd.recv() {
-        match command {
-            Command::StartCapture(interface) => (),
-            Command::StopCapture => (),
-        }
-    }
+pub fn start_capture(interface: String, output: Sender<HttpStream>) -> JoinHandle<()> {
+    let mut devices = Device::list().unwrap();
+    let i = devices.iter().position(|d| d.name == interface).unwrap();
+    let device = devices.remove(i);
+
+    thread::spawn(move || {
+        capture_loop(device, output);
+    })
 }
 
-fn old_main() {
-    let mut devices = Device::list().unwrap();
-    let i = devices.iter().position(|d| d.name == "lo0").unwrap();
-    let dev = devices.remove(i);
+fn capture_loop(device: Device, output: Sender<HttpStream>) {
     let mut packet_count = 0u32;
 
-    let mut cap = Capture::from_device(dev)
+    let mut cap = Capture::from_device(device)
         .unwrap()
         .immediate_mode(true)
         .promisc(true)
@@ -167,18 +165,13 @@ fn old_main() {
 
     let mut streams = Streams::new();
 
+    // TODO next packet with timeout
     while let Ok(packet) = cap.next_packet() {
-        //println!("received {:?}", packet);
-
         let family = u32::from_le_bytes(packet.data[0..4].try_into().unwrap());
-
-        //println!("Family: {}", family);
 
         if family == 30 {
             let (headers, _next_version, payload) =
                 IpHeader::from_slice(&packet.data[4..]).unwrap();
-
-            //println!("Headers {:?}", headers);
 
             let header_and_payload = TcpHeader::from_slice(&payload);
             if header_and_payload.is_err() {
@@ -187,12 +180,8 @@ fn old_main() {
 
             let (tcp, payload2) = header_and_payload.unwrap();
 
-            //println!("Tcp {:?} payload {:?}", tcp, payload2);
-
             let stream = TcpStream::from_headers(&headers, &tcp);
             let (index, side) = streams.store(stream);
-
-            println!("Stream index is {}", index);
 
             match side {
                 EndpointSide::Source => streams.append_request_bytes(index, payload2),
@@ -201,17 +190,16 @@ fn old_main() {
 
             if tcp.fin {
                 let req = streams.take_request(index);
-
-                println!("Request: {}", String::from_utf8(req).unwrap());
-
                 let resp = streams.take_response(index);
 
-                println!("Response: {}", String::from_utf8(resp).unwrap());
+                output
+                    .send(HttpStream {
+                        id: 0,
+                        request: req,
+                        response: resp,
+                    })
+                    .unwrap();
             }
-
-            //if payload2.len() > 0 {
-            //    println!("Payload: {}", String::from_utf8(payload2.into()).unwrap());
-            //}
 
             packet_count += 1;
             if packet_count > 50 {
