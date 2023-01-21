@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
 
@@ -6,26 +7,74 @@ use crossterm::event::Event::Key;
 use crossterm::event::{self, KeyCode};
 use tui::layout::{Constraint, Direction, Layout, Rect};
 use tui::style::{Modifier, Style};
+use tui::text::{Span, Spans};
 use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
 use tui::{backend::Backend, Frame, Terminal};
 
 use crate::capture_control::Command;
 
-pub struct HttpStream {
+pub struct RawStream {
     pub id: u16,
     pub request: Vec<u8>,
     pub response: Vec<u8>,
 }
 
+pub struct Req {
+    pub method: String,
+    pub path: String,
+    pub version: String,
+    pub headers: HashMap<String, String>,
+    pub body: Option<String>,
+}
+
+pub struct HttpStream {
+    pub raw_stream: RawStream,
+    pub parsed_request: Req,
+}
+
 pub struct State {
     pub streams: Vec<HttpStream>,
     pub stream_items: Vec<ListItem<'static>>,
-    pub input: Receiver<HttpStream>,
+    pub input: Receiver<RawStream>,
     pub commands: Sender<Command>,
     pub selected_stream: ListState,
 }
 
 impl State {
+    fn add_stream(&mut self, stream: RawStream) {
+        let mut headers = [httparse::EMPTY_HEADER; 16];
+        let mut parsed_req = httparse::Request::new(&mut headers);
+        let res = parsed_req.parse(stream.request.as_slice()).unwrap();
+
+        if res.is_partial() {
+            return;
+            //panic!("Request is partial {:?}", parsed_req);
+        }
+
+        let mut req = Req {
+            method: parsed_req.method.unwrap().to_string(),
+            path: parsed_req.path.unwrap().to_string(),
+            version: parsed_req.version.unwrap().to_string(),
+            headers: HashMap::new(),
+            body: None,
+        };
+
+        for header in parsed_req.headers {
+            req.headers.insert(
+                header.name.to_string(),
+                String::from_utf8(header.value.to_vec()).unwrap(),
+            );
+        }
+
+        let item = ListItem::new(format!("{} {} {}", req.version, req.method, req.path));
+
+        self.stream_items.push(item);
+        self.streams.push(HttpStream {
+            raw_stream: stream,
+            parsed_request: req,
+        });
+    }
+
     fn move_up(&mut self) {
         let selected = match self.selected_stream.selected() {
             Some(p) => {
@@ -57,7 +106,7 @@ impl State {
     }
 }
 
-pub fn new_state(input: Receiver<HttpStream>, cmd: Sender<Command>) -> State {
+pub fn new_state(input: Receiver<RawStream>, cmd: Sender<Command>) -> State {
     State {
         streams: vec![],
         input,
@@ -91,15 +140,6 @@ pub fn run_app<B: Backend>(
                             .commands
                             .send(Command::StartCapture("lo0".to_string()))?;
                     }
-                    KeyCode::Char('x') => {
-                        state.streams.push(HttpStream {
-                            id: 1,
-                            request: b"Req".to_vec(),
-                            response: b"".to_vec(),
-                        });
-                        state.stream_items.push(ListItem::new("Req"));
-                        need_redraw = true;
-                    }
                     KeyCode::Up => {
                         state.move_up();
                         need_redraw = true;
@@ -114,8 +154,7 @@ pub fn run_app<B: Backend>(
         }
 
         if let Ok(stream) = state.input.recv_timeout(Duration::from_millis(100)) {
-            state.streams.push(stream);
-            state.stream_items.push(ListItem::new("Req"));
+            state.add_stream(stream);
             need_redraw = true;
         }
 
@@ -163,7 +202,22 @@ fn list_streams<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect) {
 }
 
 fn request_response<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect) {
-    let text = format!("Test {:?}", state.selected_stream.selected());
+    let mut text = vec![];
+
+    if let Some(selected) = state.selected_stream.selected() {
+        if let Some(s) = &state.streams.get(selected) {
+            let pr = &s.parsed_request;
+
+            text = vec![Spans::from(vec![
+                Span::styled(
+                    pr.method.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!(" {} ({}", pr.path.clone(), pr.version.clone())),
+            ])];
+        }
+    }
+
     let content = Paragraph::new(text).block(
         Block::default()
             .title("list")

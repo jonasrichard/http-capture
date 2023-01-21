@@ -1,13 +1,13 @@
 use crossbeam::channel::{Receiver, Sender};
 
-use crate::{capture, ui::HttpStream};
+use crate::{capture, ui::RawStream};
 
 pub enum Command {
     StartCapture(String),
     StopCapture,
 }
 
-pub fn control_loop(cmd: Receiver<Command>, output: Sender<HttpStream>) {
+pub fn control_loop(cmd: Receiver<Command>, output: Sender<RawStream>) {
     let mut capture_handler = None;
 
     while let Ok(command) = cmd.recv() {

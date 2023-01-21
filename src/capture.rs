@@ -8,7 +8,7 @@ use crossbeam::channel::Sender;
 use etherparse::{IpHeader, TcpHeader};
 use pcap::{Capture, Device};
 
-use crate::ui::HttpStream;
+use crate::ui::{HttpStream, RawStream};
 
 #[derive(Debug, PartialEq)]
 struct Endpoint {
@@ -143,7 +143,7 @@ impl Streams {
     }
 }
 
-pub fn start_capture(interface: String, output: Sender<HttpStream>) -> JoinHandle<()> {
+pub fn start_capture(interface: String, output: Sender<RawStream>) -> JoinHandle<()> {
     let mut devices = Device::list().unwrap();
     let i = devices.iter().position(|d| d.name == interface).unwrap();
     let device = devices.remove(i);
@@ -153,7 +153,7 @@ pub fn start_capture(interface: String, output: Sender<HttpStream>) -> JoinHandl
     })
 }
 
-fn capture_loop(device: Device, output: Sender<HttpStream>) {
+fn capture_loop(device: Device, output: Sender<RawStream>) {
     let mut packet_count = 0u32;
 
     let mut cap = Capture::from_device(device)
@@ -193,7 +193,7 @@ fn capture_loop(device: Device, output: Sender<HttpStream>) {
                 let resp = streams.take_response(index);
 
                 output
-                    .send(HttpStream {
+                    .send(RawStream {
                         id: 0,
                         request: req,
                         response: resp,
