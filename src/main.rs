@@ -4,14 +4,14 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use std::{error::Error, thread};
+use std::{env, error::Error, thread};
 use tui::{backend::CrosstermBackend, Terminal};
 
 mod capture;
 mod capture_control;
 mod ui;
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn start_ui() -> Result<(), Box<dyn Error>> {
     enable_raw_mode()?;
     execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture,)?;
 
@@ -43,4 +43,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     capture_handle.join().unwrap();
 
     Ok(())
+}
+
+fn start_cli() {
+    let (tx, rx) = bounded(5);
+
+    let capture_handle = thread::spawn(move || {
+        println!("Capturing lo0...");
+
+        capture::start_capture("lo0".to_string(), tx);
+    });
+
+    while let Ok(stream) = rx.recv() {
+        println!("{:?}", stream);
+    }
+
+    capture_handle.join().unwrap();
+}
+
+fn main() {
+    if env::args().nth(1) == Some("--dev".to_string()) {
+        start_cli();
+    } else {
+        start_ui().unwrap();
+    }
 }

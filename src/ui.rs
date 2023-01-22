@@ -19,6 +19,19 @@ pub struct RawStream {
     pub response: Vec<u8>,
 }
 
+impl std::fmt::Debug for RawStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawStream")
+            .field("id", &self.id)
+            .field("request", &String::from_utf8(self.request.clone()).unwrap())
+            .field(
+                "response",
+                &String::from_utf8(self.response.clone()).unwrap(),
+            )
+            .finish()
+    }
+}
+
 pub struct Req {
     pub method: String,
     pub path: String,
@@ -27,9 +40,18 @@ pub struct Req {
     pub body: Option<String>,
 }
 
+pub struct Resp {
+    pub version: String,
+    pub code: u16,
+    pub reason: Option<String>,
+    pub headers: HashMap<String, String>,
+    pub body: Option<String>,
+}
+
 pub struct HttpStream {
     pub raw_stream: RawStream,
     pub parsed_request: Req,
+    pub parsed_response: Resp,
 }
 
 pub struct State {
@@ -42,6 +64,7 @@ pub struct State {
 
 impl State {
     fn add_stream(&mut self, stream: RawStream) {
+        // Parse request
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parsed_req = httparse::Request::new(&mut headers);
         let res = parsed_req.parse(stream.request.as_slice()).unwrap();
@@ -66,12 +89,56 @@ impl State {
             );
         }
 
+        let body_start = res.unwrap();
+
+        if body_start < stream.request.len() {
+            req.body = Some(
+                String::from_utf8(stream.request[body_start..].to_vec())
+                    .unwrap_or("Encoding error".to_string()),
+            );
+        }
+
+        // Parse response
+        let mut headers = [httparse::EMPTY_HEADER; 16];
+        let mut parsed_resp = httparse::Response::new(&mut headers);
+        let res = parsed_resp.parse(stream.response.as_slice()).unwrap();
+
+        if res.is_partial() {
+            return;
+            //panic!("Request is partial {:?}", parsed_req);
+        }
+
+        let mut resp = Resp {
+            version: parsed_resp.version.unwrap().to_string(),
+            code: parsed_resp.code.unwrap(),
+            reason: parsed_resp.reason.map(|r| r.to_string()),
+            headers: HashMap::new(),
+            body: None,
+        };
+
+        for header in parsed_resp.headers {
+            resp.headers.insert(
+                header.name.to_string(),
+                String::from_utf8(header.value.to_vec()).unwrap(),
+            );
+        }
+
+        let body_start = res.unwrap();
+
+        if body_start < stream.response.len() {
+            resp.body = Some(
+                String::from_utf8(stream.response[body_start..].to_vec())
+                    .unwrap_or("Encoding error".to_string()),
+            );
+        }
+
         let item = ListItem::new(format!("{} {} {}", req.version, req.method, req.path));
 
         self.stream_items.push(item);
         self.streams.push(HttpStream {
             raw_stream: stream,
             parsed_request: req,
+            parsed_response: resp,
         });
     }
 
@@ -208,13 +275,45 @@ fn request_response<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect)
         if let Some(s) = &state.streams.get(selected) {
             let pr = &s.parsed_request;
 
-            text = vec![Spans::from(vec![
+            text.push(Spans::from(vec![
                 Span::styled(
                     pr.method.clone(),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(format!(" {} ({}", pr.path.clone(), pr.version.clone())),
-            ])];
+            ]));
+
+            for header in &pr.headers {
+                text.push(Spans::from(vec![
+                    Span::styled(header.0, Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(format!(": {}", header.1)),
+                ]));
+            }
+
+            text.push(Span::raw("\n").into());
+
+            if let Some(ref body) = pr.body {
+                text.push(Span::raw(body).into());
+            }
+
+            text.push(Span::raw("\n").into());
+
+            let resp = &s.parsed_response;
+
+            text.push(Span::raw(format!("{} {}", resp.code, resp.version)).into());
+
+            for header in &resp.headers {
+                text.push(Spans::from(vec![
+                    Span::styled(header.0, Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(format!(": {}", header.1)),
+                ]));
+            }
+
+            text.push(Span::raw("\n").into());
+
+            if let Some(ref body) = resp.body {
+                text.push(Span::raw(body).into());
+            }
         }
     }
 

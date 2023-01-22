@@ -8,7 +8,7 @@ use crossbeam::channel::Sender;
 use etherparse::{IpHeader, TcpHeader};
 use pcap::{Capture, Device};
 
-use crate::ui::{HttpStream, RawStream};
+use crate::ui::RawStream;
 
 #[derive(Debug, PartialEq)]
 struct Endpoint {
@@ -30,12 +30,12 @@ struct TcpStream {
 impl TcpStream {
     fn from_headers(ip: &IpHeader, tcp: &TcpHeader) -> Self {
         let source_addr = match ip {
-            IpHeader::Version4(_, _) => todo!(),
+            IpHeader::Version4(ip_header, _) => ip_header.source.into(),
             IpHeader::Version6(ip_header, _) => ip_header.source.into(),
         };
 
         let dest_addr = match ip {
-            IpHeader::Version4(_, _) => todo!(),
+            IpHeader::Version4(ip_header, _) => ip_header.destination.into(),
             IpHeader::Version6(ip_header, _) => ip_header.destination.into(),
         };
 
@@ -169,7 +169,7 @@ fn capture_loop(device: Device, output: Sender<RawStream>) {
     while let Ok(packet) = cap.next_packet() {
         let family = u32::from_le_bytes(packet.data[0..4].try_into().unwrap());
 
-        if family == 30 {
+        if family == 30 || family == 2 {
             let (headers, _next_version, payload) =
                 IpHeader::from_slice(&packet.data[4..]).unwrap();
 
@@ -177,6 +177,8 @@ fn capture_loop(device: Device, output: Sender<RawStream>) {
             if header_and_payload.is_err() {
                 continue;
             }
+
+            //hexdump(packet.data);
 
             let (tcp, payload2) = header_and_payload.unwrap();
 
@@ -188,6 +190,9 @@ fn capture_loop(device: Device, output: Sender<RawStream>) {
                 EndpointSide::Destination => streams.append_response_bytes(index, payload2),
             }
 
+            // TODO Store if tcp fin came from source or dest side and mark that stream only, not take
+            // that. And also send to the stream.
+            // Rename struct, a lot of has name stream.
             if tcp.fin {
                 let req = streams.take_request(index);
                 let resp = streams.take_response(index);
@@ -207,4 +212,25 @@ fn capture_loop(device: Device, output: Sender<RawStream>) {
             }
         }
     }
+}
+
+#[allow(dead_code)]
+fn hexdump(data: &[u8]) {
+    for ch in data.chunks(16) {
+        let mut line = String::from("");
+
+        for c in ch {
+            print!("{:02X} ", c);
+
+            if *c > 31 && *c < 128 {
+                line.push(char::from_u32(*c as u32).unwrap_or('.'));
+            } else {
+                line.push('.');
+            }
+        }
+
+        println!("|{}|", line);
+    }
+
+    println!("");
 }
