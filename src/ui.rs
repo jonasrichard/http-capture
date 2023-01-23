@@ -7,7 +7,7 @@ use crossterm::event::Event::Key;
 use crossterm::event::{self, KeyCode};
 use tui::layout::{Constraint, Direction, Layout, Rect};
 use tui::style::{Modifier, Style};
-use tui::text::{Span, Spans};
+use tui::text::{Span, Spans, Text};
 use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
 use tui::{backend::Backend, Frame, Terminal};
 
@@ -269,50 +269,38 @@ fn list_streams<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect) {
 }
 
 fn request_response<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect) {
-    let mut text = vec![];
+    let mut text = Text::from("");
 
     if let Some(selected) = state.selected_stream.selected() {
         if let Some(s) = &state.streams.get(selected) {
             let pr = &s.parsed_request;
 
-            text.push(Spans::from(vec![
-                Span::styled(
-                    pr.method.clone(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!(" {} ({}", pr.path.clone(), pr.version.clone())),
-            ]));
+            text.extend(Text::raw(format!("{} {}\n", pr.method, pr.path)));
 
             for header in &pr.headers {
-                text.push(Spans::from(vec![
-                    Span::styled(header.0, Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(format!(": {}", header.1)),
-                ]));
+                text.extend(Text::raw(format!("{}: {}\n", header.0, header.1)));
             }
 
-            text.push(Span::raw("\n").into());
+            text.extend(Text::raw("\n"));
 
             if let Some(ref body) = pr.body {
-                text.push(Span::raw(body).into());
+                text.extend(Text::raw(body));
             }
 
-            text.push(Span::raw("\n").into());
+            text.extend(Text::raw("\n"));
 
             let resp = &s.parsed_response;
 
-            text.push(Span::raw(format!("{} {}", resp.code, resp.version)).into());
+            text.extend(Text::raw(format!("{} {}", resp.code, resp.version)));
 
             for header in &resp.headers {
-                text.push(Spans::from(vec![
-                    Span::styled(header.0, Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(format!(": {}", header.1)),
-                ]));
+                text.extend(Text::raw(format!("{}: {}\n", header.0, header.1)));
             }
 
-            text.push(Span::raw("\n").into());
+            text.extend(Text::raw("\n"));
 
             if let Some(ref body) = resp.body {
-                text.push(Span::raw(body).into());
+                text.extend(Text::raw(body));
             }
         }
     }
