@@ -172,7 +172,10 @@ fn packet_stream(mut cap: Capture<Active>) -> Receiver<Vec<u8>> {
             let family = u32::from_le_bytes(packet.data[0..4].try_into().unwrap());
 
             if family == 30 || family == 2 {
-                tx.send(packet.data.to_vec()).unwrap();
+                match tx.send(packet.data.to_vec()) {
+                    Err(_) => break,
+                    Ok(_) => (),
+                }
             }
         }
     });

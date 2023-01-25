@@ -5,13 +5,19 @@ use std::time::Duration;
 use crossbeam::channel::{Receiver, Sender};
 use crossterm::event::Event::Key;
 use crossterm::event::{self, KeyCode};
-use tui::layout::{Constraint, Direction, Layout, Rect};
+use tui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use tui::style::{Modifier, Style};
-use tui::text::Text;
-use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
+use tui::text::{Span, Spans, Text};
+use tui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 use tui::{backend::Backend, Frame, Terminal};
 
 use crate::capture_control::Command;
+
+const HELP: &str = r#"
+C:        Start capture
+S:        Stop capture
+Q:        Quit
+"#;
 
 pub struct RawStream {
     pub id: u16,
@@ -54,12 +60,26 @@ pub struct HttpStream {
     pub parsed_response: Resp,
 }
 
+enum CaptureState {
+    Active,
+    Inactive,
+}
+
+enum SelectedFrame {
+    PacketList,
+    PacketDetails,
+    Help,
+}
+
 pub struct State {
     pub streams: Vec<HttpStream>,
     pub stream_items: Vec<ListItem<'static>>,
     pub input: Receiver<RawStream>,
     pub commands: Sender<Command>,
     pub selected_stream: ListState,
+    capture_state: CaptureState,
+    selected_frame: SelectedFrame,
+    details_scroll: (u16, u16),
 }
 
 impl State {
@@ -180,6 +200,9 @@ pub fn new_state(input: Receiver<RawStream>, cmd: Sender<Command>) -> State {
         commands: cmd,
         selected_stream: ListState::default(),
         stream_items: vec![],
+        capture_state: CaptureState::Inactive,
+        selected_frame: SelectedFrame::PacketList,
+        details_scroll: (0, 0),
     }
 }
 
@@ -190,43 +213,75 @@ pub fn run_app<B: Backend>(
     terminal.draw(|f| draw_ui(f, &mut state))?;
 
     loop {
-        let mut need_redraw = false;
-
         if event::poll(Duration::from_millis(100))? {
             if let Key(key) = event::read()? {
+                match state.selected_frame {
+                    SelectedFrame::PacketList => match key.code {
+                        KeyCode::Up => {
+                            state.move_up();
+                            state.details_scroll = (0, 0);
+                        }
+                        KeyCode::Down => {
+                            state.move_down();
+                            state.details_scroll = (0, 0);
+                        }
+                        KeyCode::Tab => {
+                            state.selected_frame = SelectedFrame::PacketDetails;
+                        }
+                        _ => (),
+                    },
+                    SelectedFrame::PacketDetails => match key.code {
+                        KeyCode::Tab => {
+                            state.selected_frame = SelectedFrame::PacketList;
+                        }
+                        KeyCode::Up => {
+                            if state.details_scroll.0 > 0 {
+                                state.details_scroll.0 -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            state.details_scroll.0 += 1;
+                        }
+                        _ => (),
+                    },
+                    SelectedFrame::Help => match key.code {
+                        KeyCode::Esc => {
+                            state.selected_frame = SelectedFrame::PacketList;
+                        }
+                        _ => (),
+                    },
+                }
+
                 match key.code {
                     KeyCode::Char('q') => {
-                        //drop(state.commands);
-
                         return Ok(());
                     }
                     KeyCode::Char('c') => {
-                        // TODO display a label that we are capturing, maybe we need capture mode
-                        // in the state
+                        state.capture_state = CaptureState::Active;
                         state
                             .commands
                             .send(Command::StartCapture("lo0".to_string()))?;
                     }
-                    KeyCode::Up => {
-                        state.move_up();
-                        need_redraw = true;
+                    KeyCode::Char('s') => {
+                        state.capture_state = CaptureState::Inactive;
+                        state.commands.send(Command::StopCapture)?;
                     }
-                    KeyCode::Down => {
-                        state.move_down();
-                        need_redraw = true;
+                    KeyCode::Char('h') => {
+                        state.selected_frame = SelectedFrame::Help;
                     }
                     _ => (),
                 }
+
+                terminal.draw(|f| draw_ui(f, &mut state))?;
             }
         }
 
-        if let Ok(stream) = state.input.recv_timeout(Duration::from_millis(100)) {
-            state.add_stream(stream);
-            need_redraw = true;
-        }
-
-        if need_redraw {
-            terminal.draw(|f| draw_ui(f, &mut state))?;
+        match state.input.recv_timeout(Duration::from_millis(100)) {
+            Ok(stream) => {
+                state.add_stream(stream);
+                terminal.draw(|f| draw_ui(f, &mut state))?;
+            }
+            Err(e) => {}
         }
     }
 }
@@ -237,30 +292,70 @@ fn draw_ui<B: Backend>(f: &mut Frame<B>, state: &mut State) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(f.size());
 
-    //let traffic_block = Block::default()
-    //    .title("HTTP traffic")
-    //    .borders(Borders::ALL)
-    //    .border_type(BorderType::Rounded);
-    //f.render_widget(traffic_block, parent_chunk[0]);
-
     list_streams(f, state, parent_chunk[0]);
 
-    //let detail_block = Block::default()
-    //    .title("Request/response details")
-    //    .borders(Borders::ALL)
-    //    .border_type(BorderType::Rounded);
-    //f.render_widget(detail_block, parent_chunk[1]);
-
     request_response(f, state, parent_chunk[1]);
+
+    match state.selected_frame {
+        SelectedFrame::Help => help(f),
+        _ => (),
+    }
+}
+
+fn help<B: Backend>(f: &mut Frame<B>) {
+    let vertical_margin = (f.size().height - 10) / 2;
+    let horizontal_margin = (f.size().width - 30) / 2;
+    let rect = Rect::new(horizontal_margin, vertical_margin, 30, 10);
+
+    //let v = Layout::default()
+    //    .direction(Direction::Vertical)
+    //    .constraints([
+    //        Constraint::Min(vertical_margin),
+    //        Constraint::Length(10),
+    //        Constraint::Min(vertical_margin),
+    //    ])
+    //    .split(f.size());
+    //let h = Layout::default()
+    //    .direction(Direction::Horizontal)
+    //    .constraints([
+    //        Constraint::Min(horizontal_margin),
+    //        Constraint::Length(30),
+    //        Constraint::Min(horizontal_margin),
+    //    ])
+    //    .split(v[1]);
+
+    let help = Paragraph::new(HELP).block(
+        Block::default()
+            .title("Help")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain),
+    );
+
+    f.render_widget(Clear, rect);
+    f.render_widget(help, rect);
 }
 
 fn list_streams<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect) {
+    let border_type = match state.selected_frame {
+        SelectedFrame::PacketList => BorderType::Double,
+        _ => BorderType::Plain,
+    };
+
+    let title = match state.capture_state {
+        CaptureState::Active => Span::styled(
+            "HTTP streams (capturing)",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        CaptureState::Inactive => Span::raw("HTTP streams"),
+    };
+
     let list = List::new(state.stream_items.clone())
         .block(
             Block::default()
-                .title("list")
+                .title(Spans::from(title))
+                .title_alignment(Alignment::Center)
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded),
+                .border_type(border_type),
         )
         .highlight_symbol(">>")
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
@@ -305,12 +400,19 @@ fn request_response<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect)
         }
     }
 
-    let content = Paragraph::new(text).block(
-        Block::default()
-            .title("list")
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded),
-    );
+    let border_type = match state.selected_frame {
+        SelectedFrame::PacketDetails => BorderType::Double,
+        _ => BorderType::Plain,
+    };
+
+    let content = Paragraph::new(text)
+        .block(
+            Block::default()
+                .title("list")
+                .borders(Borders::ALL)
+                .border_type(border_type),
+        )
+        .scroll(state.details_scroll);
 
     f.render_widget(content, area);
 }
