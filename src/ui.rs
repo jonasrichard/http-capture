@@ -7,7 +7,7 @@ use crossterm::event::Event::Key;
 use crossterm::event::{self, KeyCode};
 use tui::layout::{Constraint, Direction, Layout, Rect};
 use tui::style::{Modifier, Style};
-use tui::text::{Span, Spans, Text};
+use tui::text::Text;
 use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
 use tui::{backend::Backend, Frame, Terminal};
 

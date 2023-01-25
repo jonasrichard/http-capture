@@ -4,9 +4,12 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crossbeam::channel::Sender;
+use crossbeam::{
+    channel::{self, Receiver, Sender},
+    select,
+};
 use etherparse::{IpHeader, TcpHeader};
-use pcap::{Capture, Device};
+use pcap::{Active, Capture, Device};
 
 use crate::ui::RawStream;
 
@@ -143,20 +146,44 @@ impl Streams {
     }
 }
 
-pub fn start_capture(interface: String, output: Sender<RawStream>) -> JoinHandle<()> {
+pub enum Command {
+    StopCapture,
+}
+
+pub fn start_capture(
+    interface: String,
+    output: Sender<RawStream>,
+    commands: Receiver<Command>,
+) -> JoinHandle<()> {
     let mut devices = Device::list().unwrap();
     let i = devices.iter().position(|d| d.name == interface).unwrap();
     let device = devices.remove(i);
 
     thread::spawn(move || {
-        capture_loop(device, output);
+        capture_loop(device, output, commands);
     })
 }
 
-fn capture_loop(device: Device, output: Sender<RawStream>) {
+fn packet_stream(mut cap: Capture<Active>) -> Receiver<Vec<u8>> {
+    let (tx, rx) = channel::bounded(10);
+
+    thread::spawn(move || {
+        while let Ok(packet) = cap.next_packet() {
+            let family = u32::from_le_bytes(packet.data[0..4].try_into().unwrap());
+
+            if family == 30 || family == 2 {
+                tx.send(packet.data.to_vec()).unwrap();
+            }
+        }
+    });
+
+    rx
+}
+
+fn capture_loop(device: Device, output: Sender<RawStream>, commands: Receiver<Command>) {
     let mut packet_count = 0u32;
 
-    let mut cap = Capture::from_device(device)
+    let cap = Capture::from_device(device)
         .unwrap()
         .immediate_mode(true)
         .promisc(true)
@@ -165,50 +192,57 @@ fn capture_loop(device: Device, output: Sender<RawStream>) {
 
     let mut streams = Streams::new();
 
-    // TODO next packet with timeout
-    while let Ok(packet) = cap.next_packet() {
-        let family = u32::from_le_bytes(packet.data[0..4].try_into().unwrap());
+    let packets = packet_stream(cap);
 
-        if family == 30 || family == 2 {
-            let (headers, _next_version, payload) =
-                IpHeader::from_slice(&packet.data[4..]).unwrap();
+    loop {
+        select! {
+            recv(packets) -> packet => {
+                let packet = packet.unwrap();
 
-            let header_and_payload = TcpHeader::from_slice(&payload);
-            if header_and_payload.is_err() {
-                continue;
+                let (headers, _next_version, payload) =
+                    IpHeader::from_slice(&packet.as_slice()[4..]).unwrap();
+
+                if let Ok((tcp, payload2)) = TcpHeader::from_slice(&payload) {
+
+                    //hexdump(&packet.as_slice());
+
+                    let stream = TcpStream::from_headers(&headers, &tcp);
+                    let (index, side) = streams.store(stream);
+
+                    match side {
+                        EndpointSide::Source => streams.append_request_bytes(index, payload2),
+                        EndpointSide::Destination => streams.append_response_bytes(index, payload2),
+                    }
+
+                    // TODO Store if tcp fin came from source or dest side and mark that stream only, not take
+                    // that. And also send to the stream.
+                    // Rename struct, a lot of has name stream.
+                    if tcp.fin {
+                        let req = streams.take_request(index);
+                        let resp = streams.take_response(index);
+
+                        output
+                            .send(RawStream {
+                                id: 0,
+                                request: req,
+                                response: resp,
+                            })
+                            .unwrap();
+                    }
+
+                    packet_count += 1;
+                    if packet_count > 50 {
+                        return;
+                    }
+                }
             }
-
-            //hexdump(packet.data);
-
-            let (tcp, payload2) = header_and_payload.unwrap();
-
-            let stream = TcpStream::from_headers(&headers, &tcp);
-            let (index, side) = streams.store(stream);
-
-            match side {
-                EndpointSide::Source => streams.append_request_bytes(index, payload2),
-                EndpointSide::Destination => streams.append_response_bytes(index, payload2),
-            }
-
-            // TODO Store if tcp fin came from source or dest side and mark that stream only, not take
-            // that. And also send to the stream.
-            // Rename struct, a lot of has name stream.
-            if tcp.fin {
-                let req = streams.take_request(index);
-                let resp = streams.take_response(index);
-
-                output
-                    .send(RawStream {
-                        id: 0,
-                        request: req,
-                        response: resp,
-                    })
-                    .unwrap();
-            }
-
-            packet_count += 1;
-            if packet_count > 50 {
-                break;
+            recv(commands) -> cmd => {
+                match cmd {
+                    Ok(Command::StopCapture) => {
+                        return;
+                    }
+                    _ => {}
+                }
             }
         }
     }

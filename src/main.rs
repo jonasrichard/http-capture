@@ -46,17 +46,22 @@ fn start_ui() -> Result<(), Box<dyn Error>> {
 }
 
 fn start_cli() {
-    let (tx, rx) = bounded(5);
+    let (http_tx, http_rx) = bounded(5);
+    let (cmd_tx, cmd_rx) = bounded(5);
 
     let capture_handle = thread::spawn(move || {
-        println!("Capturing lo0...");
-
-        capture::start_capture("lo0".to_string(), tx);
+        capture_control::control_loop(cmd_rx, http_tx);
     });
 
-    while let Ok(stream) = rx.recv() {
+    cmd_tx
+        .send(capture_control::Command::StartCapture("lo0".to_string()))
+        .unwrap();
+
+    while let Ok(stream) = http_rx.recv() {
         println!("{:?}", stream);
     }
+
+    cmd_tx.send(capture_control::Command::StopCapture).unwrap();
 
     capture_handle.join().unwrap();
 }
