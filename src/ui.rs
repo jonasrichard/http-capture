@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::error::Error;
+use std::thread;
 use std::time::Duration;
 
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::{self, Receiver, Sender};
+use crossbeam::select;
 use crossterm::event::Event::Key;
 use crossterm::event::{self, KeyCode};
 use tui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -210,78 +212,88 @@ pub fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     mut state: State,
 ) -> Result<(), Box<dyn Error>> {
-    terminal.draw(|f| draw_ui(f, &mut state))?;
+    let (event_tx, event_rx) = channel::bounded(16);
 
-    loop {
-        if event::poll(Duration::from_millis(100))? {
-            if let Key(key) = event::read()? {
-                match state.selected_frame {
-                    SelectedFrame::PacketList => match key.code {
-                        KeyCode::Up => {
-                            state.move_up();
-                            state.details_scroll = (0, 0);
-                        }
-                        KeyCode::Down => {
-                            state.move_down();
-                            state.details_scroll = (0, 0);
-                        }
-                        KeyCode::Tab => {
-                            state.selected_frame = SelectedFrame::PacketDetails;
-                        }
-                        _ => (),
-                    },
-                    SelectedFrame::PacketDetails => match key.code {
-                        KeyCode::Tab => {
-                            state.selected_frame = SelectedFrame::PacketList;
-                        }
-                        KeyCode::Up => {
-                            if state.details_scroll.0 > 0 {
-                                state.details_scroll.0 -= 1;
-                            }
-                        }
-                        KeyCode::Down => {
-                            state.details_scroll.0 += 1;
-                        }
-                        _ => (),
-                    },
-                    SelectedFrame::Help => match key.code {
-                        KeyCode::Esc => {
-                            state.selected_frame = SelectedFrame::PacketList;
-                        }
-                        _ => (),
-                    },
-                }
-
-                match key.code {
-                    KeyCode::Char('q') => {
-                        return Ok(());
-                    }
-                    KeyCode::Char('c') => {
-                        state.capture_state = CaptureState::Active;
-                        state
-                            .commands
-                            .send(Command::StartCapture("lo0".to_string()))?;
-                    }
-                    KeyCode::Char('s') => {
-                        state.capture_state = CaptureState::Inactive;
-                        state.commands.send(Command::StopCapture)?;
-                    }
-                    KeyCode::Char('h') => {
-                        state.selected_frame = SelectedFrame::Help;
-                    }
-                    _ => (),
-                }
-
-                terminal.draw(|f| draw_ui(f, &mut state))?;
+    let ui_handle = thread::spawn(move || {
+        while let Ok(evt) = event::read() {
+            if let Err(_) = event_tx.send(evt) {
+                break;
             }
         }
+    });
 
-        match state.input.recv_timeout(Duration::from_millis(100)) {
-            Ok(stream) => {
-                state.add_stream(stream);
-                terminal.draw(|f| draw_ui(f, &mut state))?;
+    loop {
+        terminal.draw(|f| draw_ui(f, &mut state))?;
+
+        select! {
+            recv(event_rx) -> event => match event {
+                Ok(Key(key)) => {
+                    match state.selected_frame {
+                        SelectedFrame::PacketList => match key.code {
+                            KeyCode::Up => {
+                                state.move_up();
+                                state.details_scroll = (0, 0);
+                            }
+                            KeyCode::Down => {
+                                state.move_down();
+                                state.details_scroll = (0, 0);
+                            }
+                            KeyCode::Tab => {
+                                state.selected_frame = SelectedFrame::PacketDetails;
+                            }
+                            _ => (),
+                        },
+                        SelectedFrame::PacketDetails => match key.code {
+                            KeyCode::Tab => {
+                                state.selected_frame = SelectedFrame::PacketList;
+                            }
+                            KeyCode::Up => {
+                                if state.details_scroll.0 > 0 {
+                                    state.details_scroll.0 -= 1;
+                                }
+                            }
+                            KeyCode::Down => {
+                                state.details_scroll.0 += 1;
+                            }
+                            _ => (),
+                        },
+                        SelectedFrame::Help => match key.code {
+                            KeyCode::Esc => {
+                                state.selected_frame = SelectedFrame::PacketList;
+                            }
+                            _ => (),
+                        },
+                    }
+
+                    match key.code {
+                        KeyCode::Char('q') => {
+                            return Ok(());
+                        }
+                        KeyCode::Char('c') => {
+                            state.capture_state = CaptureState::Active;
+                            state
+                                .commands
+                                .send(Command::StartCapture("lo0".to_string()))?;
+                        }
+                        KeyCode::Char('s') => {
+                            state.capture_state = CaptureState::Inactive;
+                            state.commands.send(Command::StopCapture)?;
+                        }
+                        KeyCode::Char('h') => {
+                            state.selected_frame = SelectedFrame::Help;
+                        }
+                        _ => (),
+                    }
+                },
+                Ok(_) => (),
+                Err(_) => todo!(),
+            },
+            recv(state.input) -> stream => match stream {
+                Ok(stream) => {
+                    state.add_stream(stream);
+                },
+                Err(_) => todo!(),
             }
-            Err(e) => {}
         }
     }
 }
