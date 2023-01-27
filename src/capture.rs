@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     net::IpAddr,
     thread::{self, JoinHandle},
 };
@@ -14,24 +13,33 @@ use pcap::{Active, Capture, Device};
 use crate::ui::RawStream;
 
 #[derive(Debug, PartialEq)]
-struct Endpoint {
-    address: IpAddr,
-    port: u16,
-}
-
 enum EndpointSide {
     Source,
     Destination,
 }
 
+#[derive(Debug, PartialEq)]
+struct Endpoint {
+    address: IpAddr,
+    port: u16,
+}
+
 #[derive(Debug)]
+struct Party {
+    side: EndpointSide,
+    endpoint: Endpoint,
+}
+
 struct TcpStream {
-    source: Endpoint,
-    destination: Endpoint,
+    id: usize,
+    source: Party,
+    destination: Party,
+    request: Vec<u8>,
+    response: Vec<u8>,
 }
 
 impl TcpStream {
-    fn from_headers(ip: &IpHeader, tcp: &TcpHeader) -> Self {
+    fn from_headers(ip: &IpHeader, tcp: &TcpHeader) -> (Endpoint, Endpoint) {
         let source_addr = match ip {
             IpHeader::Version4(ip_header, _) => ip_header.source.into(),
             IpHeader::Version6(ip_header, _) => ip_header.source.into(),
@@ -42,22 +50,26 @@ impl TcpStream {
             IpHeader::Version6(ip_header, _) => ip_header.destination.into(),
         };
 
-        Self {
-            source: Endpoint {
+        (
+            Endpoint {
                 address: source_addr,
                 port: tcp.source_port,
             },
-            destination: Endpoint {
+            Endpoint {
                 address: dest_addr,
                 port: tcp.destination_port,
             },
-        }
+        )
     }
 
-    fn same_parties(&self, other: &TcpStream) -> Option<EndpointSide> {
-        if self.source == other.source && self.destination == other.destination {
+    /// Checks if the two endpoints as source and destination are in the tcp stream and gives back
+    /// the `EndpointSide` as `Source` if the first endpoint is the source in the tcp stream and
+    /// the second is the destination. If they are parties in the tcp stream but opposite order,
+    /// the result will be `Destination`. Otherwise it gives back `None`.
+    fn same_parties(&self, source: &Endpoint, destination: &Endpoint) -> Option<EndpointSide> {
+        if &self.source.endpoint == source && &self.destination.endpoint == destination {
             Some(EndpointSide::Source)
-        } else if self.source == other.destination && self.destination == other.source {
+        } else if &self.source.endpoint == destination && &self.destination.endpoint == source {
             Some(EndpointSide::Destination)
         } else {
             None
@@ -65,83 +77,102 @@ impl TcpStream {
     }
 }
 
+impl std::fmt::Debug for TcpStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TcpStream")
+            .field("id", &self.id)
+            .field("source", &self.source)
+            .field("destination", &self.destination)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
 struct Streams {
-    count: u32,
-    streams: Vec<(u32, TcpStream)>,
-    requests: HashMap<u32, Vec<u8>>,
-    responses: HashMap<u32, Vec<u8>>,
+    next_id: usize,
+    streams: Vec<TcpStream>,
 }
 
 impl Streams {
     fn new() -> Self {
         Self {
-            count: 0u32,
+            next_id: 0,
             streams: vec![],
-            requests: HashMap::new(),
-            responses: HashMap::new(),
         }
     }
 
-    fn lookup_stream(&self, ep: &TcpStream) -> Option<(u32, EndpointSide)> {
-        for (index, stream) in &self.streams {
-            match stream.same_parties(ep) {
+    // TODO pass and endpoint pair rather?
+    fn lookup_stream(&self, source: &Endpoint, dest: &Endpoint) -> Option<(usize, EndpointSide)> {
+        let mut i = 0;
+
+        for stream in &self.streams {
+            match stream.same_parties(source, dest) {
                 None => {}
                 Some(EndpointSide::Source) => {
-                    return Some((*index, EndpointSide::Source));
+                    return Some((i, EndpointSide::Source));
                 }
                 Some(EndpointSide::Destination) => {
-                    return Some((*index, EndpointSide::Destination));
+                    return Some((i, EndpointSide::Destination));
                 }
             }
+
+            i += 1;
         }
 
         None
     }
 
-    fn store(&mut self, stream: TcpStream) -> (u32, EndpointSide) {
-        match self.lookup_stream(&stream) {
+    fn store(&mut self, source: Endpoint, dest: Endpoint) -> (usize, EndpointSide) {
+        match self.lookup_stream(&source, &dest) {
             None => {
-                let num = self.count;
+                self.streams.push(TcpStream {
+                    id: self.next_id,
+                    source: Party {
+                        side: EndpointSide::Source,
+                        endpoint: source,
+                    },
+                    destination: Party {
+                        side: EndpointSide::Destination,
+                        endpoint: dest,
+                    },
+                    request: vec![],
+                    response: vec![],
+                });
 
-                self.streams.push((num, stream));
+                self.next_id += 1;
 
-                self.count += 1;
-
-                (num, EndpointSide::Source)
+                (self.streams.len() - 1, EndpointSide::Source)
             }
             Some(ep) => ep,
         }
     }
 
-    fn append_request_bytes(&mut self, index: u32, bytes: &[u8]) {
-        match self.requests.get_mut(&index) {
-            Some(request) => request.extend_from_slice(bytes),
+    fn append_request_bytes(&mut self, index: usize, bytes: &[u8]) {
+        match self.streams.get_mut(index) {
+            Some(stream) => stream.request.extend_from_slice(bytes),
             None => {
-                self.requests.insert(index, bytes.to_vec());
+                panic!("Index {} cannot be found", index);
             }
         }
     }
 
-    fn append_response_bytes(&mut self, index: u32, bytes: &[u8]) {
-        match self.responses.get_mut(&index) {
-            Some(response) => response.extend_from_slice(bytes),
+    fn append_response_bytes(&mut self, index: usize, bytes: &[u8]) {
+        match self.streams.get_mut(index) {
+            Some(stream) => stream.response.extend_from_slice(bytes),
             None => {
-                self.responses.insert(index, bytes.to_vec());
+                panic!("Index {} cannot be found", index);
             }
         }
     }
 
-    fn take_request(&mut self, index: u32) -> Vec<u8> {
-        match self.requests.remove(&index) {
-            Some(req) => req,
-            None => vec![],
-        }
-    }
+    fn take_stream(&mut self, index: usize) -> RawStream {
+        // TODO here swap_remove
+        let stream = self.streams.remove(index);
 
-    fn take_response(&mut self, index: u32) -> Vec<u8> {
-        match self.responses.remove(&index) {
-            Some(resp) => resp,
-            None => vec![],
+        RawStream {
+            id: stream.id,
+            request: stream.request,
+            response: stream.response,
         }
     }
 }
@@ -173,7 +204,10 @@ fn packet_stream(mut cap: Capture<Active>) -> Receiver<Vec<u8>> {
 
             if family == 30 || family == 2 {
                 match tx.send(packet.data.to_vec()) {
-                    Err(_) => break,
+                    Err(e) => {
+                        eprintln!("Error during sending {:?}", e);
+                        break;
+                    }
                     Ok(_) => (),
                 }
             }
@@ -184,8 +218,6 @@ fn packet_stream(mut cap: Capture<Active>) -> Receiver<Vec<u8>> {
 }
 
 fn capture_loop(device: Device, output: Sender<RawStream>, commands: Receiver<Command>) {
-    let mut packet_count = 0u32;
-
     let cap = Capture::from_device(device)
         .unwrap()
         .immediate_mode(true)
@@ -209,8 +241,8 @@ fn capture_loop(device: Device, output: Sender<RawStream>, commands: Receiver<Co
 
                     //hexdump(&packet.as_slice());
 
-                    let stream = TcpStream::from_headers(&headers, &tcp);
-                    let (index, side) = streams.store(stream);
+                    let (src, dest) = TcpStream::from_headers(&headers, &tcp);
+                    let (index, side) = streams.store(src, dest);
 
                     match side {
                         EndpointSide::Source => streams.append_request_bytes(index, payload2),
@@ -221,21 +253,11 @@ fn capture_loop(device: Device, output: Sender<RawStream>, commands: Receiver<Co
                     // that. And also send to the stream.
                     // Rename struct, a lot of has name stream.
                     if tcp.fin {
-                        let req = streams.take_request(index);
-                        let resp = streams.take_response(index);
+                        let stream = streams.take_stream(index);
 
                         output
-                            .send(RawStream {
-                                id: 0,
-                                request: req,
-                                response: resp,
-                            })
+                            .send(stream)
                             .unwrap();
-                    }
-
-                    packet_count += 1;
-                    if packet_count > 50 {
-                        return;
                     }
                 }
             }

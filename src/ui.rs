@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::thread;
-use std::time::Duration;
 
 use crossbeam::channel::{self, Receiver, Sender};
 use crossbeam::select;
@@ -22,20 +21,20 @@ Q:        Quit
 "#;
 
 pub struct RawStream {
-    pub id: u16,
+    pub id: usize,
     pub request: Vec<u8>,
     pub response: Vec<u8>,
 }
 
 impl std::fmt::Debug for RawStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let to = std::cmp::min(self.response.len(), 64);
+        let resp = String::from_utf8_lossy(&self.response[0..to]).to_string();
+
         f.debug_struct("RawStream")
             .field("id", &self.id)
             .field("request", &String::from_utf8(self.request.clone()).unwrap())
-            .field(
-                "response",
-                &String::from_utf8(self.response.clone()).unwrap(),
-            )
+            .field("response", &resp)
             .finish()
     }
 }
@@ -292,7 +291,7 @@ pub fn run_app<B: Backend>(
                 Ok(stream) => {
                     state.add_stream(stream);
                 },
-                Err(_) => todo!(),
+                Err(e) => panic!("{:?}", e),
             }
         }
     }
