@@ -36,6 +36,7 @@ struct TcpStream {
     destination: Party,
     request: Vec<u8>,
     response: Vec<u8>,
+    fin: (bool, bool),
 }
 
 impl TcpStream {
@@ -137,6 +138,7 @@ impl Streams {
                     },
                     request: vec![],
                     response: vec![],
+                    fin: (false, false),
                 });
 
                 self.next_id += 1;
@@ -165,14 +167,33 @@ impl Streams {
         }
     }
 
-    fn take_stream(&mut self, index: usize) -> RawStream {
-        // TODO here swap_remove
-        let stream = self.streams.remove(index);
+    fn register_fin(&mut self, index: usize, side: EndpointSide) -> bool {
+        if let Some(stream) = self.streams.get_mut(index) {
+            match side {
+                EndpointSide::Source => stream.fin.0 = true,
+                EndpointSide::Destination => stream.fin.1 = true,
+            }
 
-        RawStream {
-            id: stream.id,
-            request: stream.request,
-            response: stream.response,
+            stream.fin == (true, true)
+        } else {
+            false
+        }
+    }
+
+    fn send_stream(&mut self, index: usize) -> RawStream {
+        if let Some(stream) = self.streams.get_mut(index) {
+            let mut raw = RawStream {
+                id: stream.id,
+                request: vec![],
+                response: vec![],
+            };
+
+            std::mem::swap(&mut raw.request, &mut stream.request);
+            std::mem::swap(&mut raw.response, &mut stream.response);
+
+            raw
+        } else {
+            panic!("Invalid index {}", index);
         }
     }
 }
@@ -205,7 +226,7 @@ fn packet_stream(mut cap: Capture<Active>) -> Receiver<Vec<u8>> {
             if family == 30 || family == 2 {
                 match tx.send(packet.data.to_vec()) {
                     Err(e) => {
-                        eprintln!("Error during sending {:?}", e);
+                        //eprintln!("Error during sending {:?}", e);
                         break;
                     }
                     Ok(_) => (),
@@ -253,11 +274,15 @@ fn capture_loop(device: Device, output: Sender<RawStream>, commands: Receiver<Co
                     // that. And also send to the stream.
                     // Rename struct, a lot of has name stream.
                     if tcp.fin {
-                        let stream = streams.take_stream(index);
+                        if streams.register_fin(index, side) {
+                            let stream = streams.send_stream(index);
 
-                        output
-                            .send(stream)
-                            .unwrap();
+                            println!("{:?}", streams);
+
+                            output
+                                .send(stream)
+                                .unwrap();
+                        }
                     }
                 }
             }
