@@ -277,7 +277,7 @@ fn capture_loop(device: Device, output: Sender<RawStream>, commands: Receiver<Co
                         if streams.register_fin(index, side) {
                             let stream = streams.send_stream(index);
 
-                            println!("{:?}", streams);
+                            //println!("{:?}", streams);
 
                             output
                                 .send(stream)

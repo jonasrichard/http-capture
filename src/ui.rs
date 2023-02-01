@@ -144,6 +144,10 @@ impl State {
             );
         }
 
+        if !self.filter_stream(&req, &resp) {
+            return;
+        }
+
         let body_start = res.unwrap();
 
         if body_start < stream.response.len() {
@@ -153,7 +157,20 @@ impl State {
             );
         }
 
-        let item = ListItem::new(format!("{} {} {}", req.version, req.method, req.path));
+        let req_len = match req.body {
+            None => 0,
+            Some(ref b) => b.len(),
+        };
+
+        let resp_len = match resp.body {
+            None => 0,
+            Some(ref b) => b.len(),
+        };
+
+        let item = ListItem::new(format!(
+            "{} {} {} ({} b / {} b)",
+            req.version, req.method, req.path, req_len, resp_len
+        ));
 
         self.stream_items.push(item);
         self.streams.push(HttpStream {
@@ -161,6 +178,14 @@ impl State {
             parsed_request: req,
             parsed_response: resp,
         });
+    }
+
+    fn filter_stream(&self, req: &Req, resp: &Resp) -> bool {
+        if req.path.contains("Cargo") {
+            return true;
+        }
+
+        false
     }
 
     fn move_up(&mut self) {
