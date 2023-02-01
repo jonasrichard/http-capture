@@ -6,8 +6,9 @@ use crossbeam::channel::{self, Receiver, Sender};
 use crossbeam::select;
 use crossterm::event::Event::Key;
 use crossterm::event::{self, KeyCode};
+use pcap::Device;
 use tui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use tui::style::{Modifier, Style};
+use tui::style::{Color, Modifier, Style};
 use tui::text::{Span, Spans, Text};
 use tui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 use tui::{backend::Backend, Frame, Terminal};
@@ -61,6 +62,7 @@ pub struct HttpStream {
     pub parsed_response: Resp,
 }
 
+#[derive(PartialEq)]
 enum CaptureState {
     Active,
     Inactive,
@@ -70,6 +72,8 @@ enum SelectedFrame {
     PacketList,
     PacketDetails,
     Help,
+    DeviceChooser,
+    FilterSetting,
 }
 
 pub struct State {
@@ -81,6 +85,9 @@ pub struct State {
     capture_state: CaptureState,
     selected_frame: SelectedFrame,
     details_scroll: (u16, u16),
+    devices: Vec<ListItem<'static>>,
+    device_names: Vec<String>,
+    selected_device: ListState,
 }
 
 impl State {
@@ -181,15 +188,16 @@ impl State {
     }
 
     fn filter_stream(&self, req: &Req, resp: &Resp) -> bool {
-        if req.path.contains("Cargo") {
-            return true;
-        }
+        true
+        //if req.path.contains("Cargo") {
+        //    return true;
+        //}
 
-        false
+        //false
     }
 
-    fn move_up(&mut self) {
-        let selected = match self.selected_stream.selected() {
+    fn move_up(list_state: &mut ListState) {
+        let selected = match list_state.selected() {
             Some(p) => {
                 if p == 0 {
                     Some(0)
@@ -200,13 +208,13 @@ impl State {
             None => Some(0),
         };
 
-        self.selected_stream.select(selected);
+        list_state.select(selected);
     }
 
-    fn move_down(&mut self) {
-        let selected = match self.selected_stream.selected() {
+    fn move_down(list_state: &mut ListState, len: usize) {
+        let selected = match list_state.selected() {
             Some(p) => {
-                if p + 1 == self.streams.len() {
+                if p + 1 == len {
                     Some(p)
                 } else {
                     Some(p + 1)
@@ -215,11 +223,30 @@ impl State {
             None => Some(0),
         };
 
-        self.selected_stream.select(selected);
+        list_state.select(selected);
     }
 }
 
 pub fn new_state(input: Receiver<RawStream>, cmd: Sender<Command>) -> State {
+    let devices = Device::list()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| {
+            let addr = d
+                .addresses
+                .get(0)
+                .map(|a| a.addr.to_string())
+                .unwrap_or_default();
+
+            ListItem::new(format!("{} - {}", d.name, addr))
+        })
+        .collect();
+
+    let mut device_names = vec![];
+    for dev in Device::list().unwrap() {
+        device_names.push(dev.name);
+    }
+
     State {
         streams: vec![],
         input,
@@ -229,6 +256,9 @@ pub fn new_state(input: Receiver<RawStream>, cmd: Sender<Command>) -> State {
         capture_state: CaptureState::Inactive,
         selected_frame: SelectedFrame::PacketList,
         details_scroll: (0, 0),
+        devices,
+        device_names,
+        selected_device: ListState::default(),
     }
 }
 
@@ -255,11 +285,11 @@ pub fn run_app<B: Backend>(
                     match state.selected_frame {
                         SelectedFrame::PacketList => match key.code {
                             KeyCode::Up => {
-                                state.move_up();
+                                State::move_up(&mut state.selected_stream);
                                 state.details_scroll = (0, 0);
                             }
                             KeyCode::Down => {
-                                state.move_down();
+                                State::move_down(&mut state.selected_stream, state.streams.len());
                                 state.details_scroll = (0, 0);
                             }
                             KeyCode::Tab => {
@@ -279,6 +309,17 @@ pub fn run_app<B: Backend>(
                             KeyCode::Down => {
                                 state.details_scroll.0 += 1;
                             }
+                            KeyCode::PageUp => {
+                                if state.details_scroll.0 > 15 {
+                                    state.details_scroll.0 -= 15;
+                                } else {
+                                    state.details_scroll.0 = 0;
+                                }
+                            }
+                            KeyCode::PageDown => {
+                                // TODO stop scrolling
+                                state.details_scroll.0 += 15;
+                            }
                             _ => (),
                         },
                         SelectedFrame::Help => match key.code {
@@ -287,19 +328,40 @@ pub fn run_app<B: Backend>(
                             }
                             _ => (),
                         },
+                        SelectedFrame::DeviceChooser => match key.code {
+                            KeyCode::Esc => {
+                                state.selected_frame = SelectedFrame::PacketList;
+                            }
+                            KeyCode::Up => {
+                                State::move_up(&mut state.selected_device);
+                            }
+                            KeyCode::Down => {
+                                State::move_down(&mut state.selected_device, state.devices.len());
+                            }
+                            KeyCode::Enter | KeyCode::Char(' ') => {
+                                if let Some(selected) = state.selected_device.selected() {
+                                    let dev = state.device_names.get(selected).unwrap();
+
+                                    state.selected_frame = SelectedFrame::PacketList;
+                                    state.capture_state = CaptureState::Active;
+                                    state
+                                        .commands
+                                        .send(Command::StartCapture(dev.to_string()))?;
+                                }
+                            }
+                            _ => (),
+                        },
+                        SelectedFrame::FilterSetting => (),
                     }
 
                     match key.code {
                         KeyCode::Char('q') => {
                             return Ok(());
                         }
-                        KeyCode::Char('c') => {
-                            state.capture_state = CaptureState::Active;
-                            state
-                                .commands
-                                .send(Command::StartCapture("lo0".to_string()))?;
+                        KeyCode::Char('c') if state.capture_state == CaptureState::Inactive => {
+                            state.selected_frame = SelectedFrame::DeviceChooser;
                         }
-                        KeyCode::Char('s') => {
+                        KeyCode::Char('s') if state.capture_state == CaptureState::Active => {
                             state.capture_state = CaptureState::Inactive;
                             state.commands.send(Command::StopCapture)?;
                         }
@@ -334,41 +396,9 @@ fn draw_ui<B: Backend>(f: &mut Frame<B>, state: &mut State) {
 
     match state.selected_frame {
         SelectedFrame::Help => help(f),
+        SelectedFrame::DeviceChooser => choose_device(f, state),
         _ => (),
     }
-}
-
-fn help<B: Backend>(f: &mut Frame<B>) {
-    let vertical_margin = (f.size().height - 10) / 2;
-    let horizontal_margin = (f.size().width - 30) / 2;
-    let rect = Rect::new(horizontal_margin, vertical_margin, 30, 10);
-
-    //let v = Layout::default()
-    //    .direction(Direction::Vertical)
-    //    .constraints([
-    //        Constraint::Min(vertical_margin),
-    //        Constraint::Length(10),
-    //        Constraint::Min(vertical_margin),
-    //    ])
-    //    .split(f.size());
-    //let h = Layout::default()
-    //    .direction(Direction::Horizontal)
-    //    .constraints([
-    //        Constraint::Min(horizontal_margin),
-    //        Constraint::Length(30),
-    //        Constraint::Min(horizontal_margin),
-    //    ])
-    //    .split(v[1]);
-
-    let help = Paragraph::new(HELP).block(
-        Block::default()
-            .title("Help")
-            .borders(Borders::ALL)
-            .border_type(BorderType::Plain),
-    );
-
-    f.render_widget(Clear, rect);
-    f.render_widget(help, rect);
 }
 
 fn list_streams<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect) {
@@ -451,4 +481,39 @@ fn request_response<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect)
         .scroll(state.details_scroll);
 
     f.render_widget(content, area);
+}
+
+fn help<B: Backend>(f: &mut Frame<B>) {
+    let vertical_margin = (f.size().height - 10) / 2;
+    let horizontal_margin = (f.size().width - 30) / 2;
+    let rect = Rect::new(horizontal_margin, vertical_margin, 30, 10);
+
+    let help = Paragraph::new(HELP).block(
+        Block::default()
+            .title("Help")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain),
+    );
+
+    f.render_widget(Clear, rect);
+    f.render_widget(help, rect);
+}
+
+fn choose_device<B: Backend>(f: &mut Frame<B>, state: &mut State) {
+    let (width, height) = (70, 30);
+    let vertical_margin = (f.size().height - height) / 2;
+    let horizontal_margin = (f.size().width - width) / 2;
+    let rect = Rect::new(horizontal_margin, vertical_margin, width, height);
+
+    let devices = List::new(state.devices.clone())
+        .block(
+            Block::default()
+                .title("Choose device")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain),
+        )
+        .highlight_style(Style::default().bg(Color::White));
+
+    f.render_widget(Clear, rect);
+    f.render_stateful_widget(devices, rect, &mut state.selected_device);
 }
