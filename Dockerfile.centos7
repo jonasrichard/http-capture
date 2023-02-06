@@ -7,6 +7,11 @@ RUN yum -y update && \
        gcc \
        glibc-devel
 
+COPY certs/* /etc/pki/ca-trust/source/anchors/
+RUN update-ca-trust extract
+
+RUN yum -y install libpcap-devel
+
 RUN mkdir /rust
 WORKDIR /rust
 
