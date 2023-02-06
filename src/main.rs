@@ -45,7 +45,7 @@ fn start_ui() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn start_cli() {
+fn start_cli(interface: String) {
     let (http_tx, http_rx) = bounded(5);
     let (cmd_tx, cmd_rx) = bounded(5);
 
@@ -54,7 +54,7 @@ fn start_cli() {
     });
 
     cmd_tx
-        .send(capture_control::Command::StartCapture("lo0".to_string()))
+        .send(capture_control::Command::StartCapture(interface))
         .unwrap();
 
     while let Ok(stream) = http_rx.recv() {
@@ -68,7 +68,7 @@ fn start_cli() {
 
 fn main() {
     if env::args().nth(1) == Some("--dev".to_string()) {
-        start_cli();
+        start_cli(env::args().nth(2).unwrap_or("lo0".to_string()));
     } else {
         start_ui().unwrap();
     }

@@ -34,7 +34,10 @@ impl std::fmt::Debug for RawStream {
 
         f.debug_struct("RawStream")
             .field("id", &self.id)
-            .field("request", &String::from_utf8(self.request.clone()).unwrap())
+            .field(
+                "request",
+                &String::from_utf8(self.request.clone()).unwrap_or("Non UTF-8 data".to_string()),
+            )
             .field("response", &resp)
             .finish()
     }
@@ -307,6 +310,7 @@ pub fn run_app<B: Backend>(
                                 }
                             }
                             KeyCode::Down => {
+                                // TODO text.height() tells how much we can scroll
                                 state.details_scroll.0 += 1;
                             }
                             KeyCode::PageUp => {
@@ -516,4 +520,11 @@ fn choose_device<B: Backend>(f: &mut Frame<B>, state: &mut State) {
 
     f.render_widget(Clear, rect);
     f.render_stateful_widget(devices, rect, &mut state.selected_device);
+}
+
+fn filter_stream<B: Backend>(f: &mut Frame<B>, state: &mut State) {
+    let (width, height) = (70, 30);
+    let vertical_margin = (f.size().height - height) / 2;
+    let horizontal_margin = (f.size().width - width) / 2;
+    let rect = Rect::new(horizontal_margin, vertical_margin, width, height);
 }

@@ -7,8 +7,8 @@ use crossbeam::{
     channel::{self, Receiver, Sender},
     select,
 };
-use etherparse::{IpHeader, TcpHeader};
-use pcap::{Active, Capture, Device};
+use etherparse::{IpHeader, SlicedPacket, TcpHeader};
+use pcap::{Active, Capture, Device, Packet};
 
 use crate::ui::RawStream;
 
@@ -40,27 +40,39 @@ struct TcpStream {
 }
 
 impl TcpStream {
-    fn from_headers(ip: &IpHeader, tcp: &TcpHeader) -> (Endpoint, Endpoint) {
-        let source_addr = match ip {
-            IpHeader::Version4(ip_header, _) => ip_header.source.into(),
-            IpHeader::Version6(ip_header, _) => ip_header.source.into(),
+    fn from_sliced_packet(p: &SlicedPacket) -> Option<(Endpoint, Endpoint)> {
+        use etherparse::{InternetSlice, TransportSlice};
+
+        let (source_port, dest_port) = match &p.transport {
+            None => return None,
+            Some(TransportSlice::Tcp(tcp_slice)) => {
+                (tcp_slice.source_port(), tcp_slice.destination_port())
+            }
+            _ => return None,
         };
 
-        let dest_addr = match ip {
-            IpHeader::Version4(ip_header, _) => ip_header.destination.into(),
-            IpHeader::Version6(ip_header, _) => ip_header.destination.into(),
+        let (source_addr, dest_addr) = match &p.ip {
+            None => return None,
+            Some(InternetSlice::Ipv4(ipv4_slice, _)) => (
+                IpAddr::V4(ipv4_slice.source_addr()),
+                IpAddr::V4(ipv4_slice.destination_addr()),
+            ),
+            Some(InternetSlice::Ipv6(ipv6_slice, _)) => (
+                IpAddr::V6(ipv6_slice.source_addr()),
+                IpAddr::V6(ipv6_slice.destination_addr()),
+            ),
         };
 
-        (
+        Some((
             Endpoint {
                 address: source_addr,
-                port: tcp.source_port,
+                port: source_port,
             },
             Endpoint {
                 address: dest_addr,
-                port: tcp.destination_port,
+                port: dest_port,
             },
-        )
+        ))
     }
 
     /// Checks if the two endpoints as source and destination are in the tcp stream and gives back
@@ -216,20 +228,42 @@ pub fn start_capture(
     })
 }
 
-fn packet_stream(mut cap: Capture<Active>) -> Receiver<Vec<u8>> {
+struct FilteredStream {
+    src: Endpoint,
+    dest: Endpoint,
+    payload: Vec<u8>,
+    fin: bool,
+}
+
+fn packet_stream(mut cap: Capture<Active>) -> Receiver<FilteredStream> {
     let (tx, rx) = channel::bounded(10);
 
     thread::spawn(move || {
         while let Ok(packet) = cap.next_packet() {
-            let family = u32::from_le_bytes(packet.data[0..4].try_into().unwrap());
+            //hexdump(&packet.data);
 
-            if family == 30 || family == 2 {
-                match tx.send(packet.data.to_vec()) {
-                    Err(e) => {
-                        //eprintln!("Error during sending {:?}", e);
+            let packet = SlicedPacket::from_ethernet(&packet.data).unwrap();
+
+            if let Some((source, dest)) = TcpStream::from_sliced_packet(&packet) {
+                // TODO implement filtering here
+
+                if source.port != 80 && dest.port != 80 {
+                    continue;
+                }
+
+                if let Some(etherparse::TransportSlice::Tcp(header)) = packet.transport {
+                    let filtered_stream = FilteredStream {
+                        src: source,
+                        dest,
+                        payload: packet.payload.to_vec(),
+                        fin: header.fin(),
+                    };
+
+                    if let Err(e) = tx.send(filtered_stream) {
+                        eprintln!("Error during sending {e:?}");
+
                         break;
                     }
-                    Ok(_) => (),
                 }
             }
         }
@@ -255,34 +289,25 @@ fn capture_loop(device: Device, output: Sender<RawStream>, commands: Receiver<Co
             recv(packets) -> packet => {
                 let packet = packet.unwrap();
 
-                let (headers, _next_version, payload) =
-                    IpHeader::from_slice(&packet.as_slice()[4..]).unwrap();
+                let (index, side) = streams.store(packet.src, packet.dest);
 
-                if let Ok((tcp, payload2)) = TcpHeader::from_slice(&payload) {
+                match side {
+                    EndpointSide::Source => streams.append_request_bytes(index, packet.payload.as_slice()),
+                    EndpointSide::Destination => streams.append_response_bytes(index, packet.payload.as_slice()),
+                }
 
-                    //hexdump(&packet.as_slice());
+                // TODO Store if tcp fin came from source or dest side and mark that stream only, not take
+                // that. And also send to the stream.
+                // Rename struct, a lot of has name stream.
+                if packet.fin {
+                    if streams.register_fin(index, side) {
+                        let stream = streams.send_stream(index);
 
-                    let (src, dest) = TcpStream::from_headers(&headers, &tcp);
-                    let (index, side) = streams.store(src, dest);
+                        //println!("{:?}", streams);
 
-                    match side {
-                        EndpointSide::Source => streams.append_request_bytes(index, payload2),
-                        EndpointSide::Destination => streams.append_response_bytes(index, payload2),
-                    }
-
-                    // TODO Store if tcp fin came from source or dest side and mark that stream only, not take
-                    // that. And also send to the stream.
-                    // Rename struct, a lot of has name stream.
-                    if tcp.fin {
-                        if streams.register_fin(index, side) {
-                            let stream = streams.send_stream(index);
-
-                            //println!("{:?}", streams);
-
-                            output
-                                .send(stream)
-                                .unwrap();
-                        }
+                        output
+                            .send(stream)
+                            .unwrap();
                     }
                 }
             }
