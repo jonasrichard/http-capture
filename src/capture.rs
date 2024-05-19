@@ -7,8 +7,8 @@ use crossbeam::{
     channel::{self, Receiver, Sender},
     select,
 };
-use etherparse::{IpHeader, SlicedPacket, TcpHeader};
-use pcap::{Active, Capture, Device, Packet};
+use etherparse::SlicedPacket;
+use pcap::{Active, Capture, Device};
 
 use crate::ui::RawStream;
 
@@ -43,34 +43,43 @@ impl TcpStream {
     fn from_sliced_packet(p: &SlicedPacket) -> Option<(Endpoint, Endpoint)> {
         use etherparse::{InternetSlice, TransportSlice};
 
-        let (source_port, dest_port) = match &p.transport {
-            None => return None,
-            Some(TransportSlice::Tcp(tcp_slice)) => {
-                (tcp_slice.source_port(), tcp_slice.destination_port())
-            }
+        let (src_port, dst_port) = match &p.transport {
+            Some(TransportSlice::Tcp(tcp)) => (tcp.source_port(), tcp.destination_port()),
             _ => return None,
         };
 
-        let (source_addr, dest_addr) = match &p.ip {
-            None => return None,
-            Some(InternetSlice::Ipv4(ipv4_slice, _)) => (
-                IpAddr::V4(ipv4_slice.source_addr()),
-                IpAddr::V4(ipv4_slice.destination_addr()),
+        let (src_addr, dst_addr) = match &p.net {
+            Some(InternetSlice::Ipv4(ip4)) => (
+                IpAddr::V4(ip4.header().source_addr()),
+                IpAddr::V4(ip4.header().destination_addr()),
             ),
-            Some(InternetSlice::Ipv6(ipv6_slice, _)) => (
-                IpAddr::V6(ipv6_slice.source_addr()),
-                IpAddr::V6(ipv6_slice.destination_addr()),
+            Some(InternetSlice::Ipv6(ip6)) => (
+                IpAddr::V6(ip6.header().source_addr()),
+                IpAddr::V6(ip6.header().destination_addr()),
             ),
+            _ => return None,
         };
+
+        //let (source_addr, dest_addr) = match &p.transport {
+        //    None => return None,
+        //    Some(InternetSlice::Ipv4(ipv4_slice, _)) => (
+        //        IpAddr::V4(ipv4_slice.source_addr()),
+        //        IpAddr::V4(ipv4_slice.destination_addr()),
+        //    ),
+        //    Some(InternetSlice::Ipv6(ipv6_slice, _)) => (
+        //        IpAddr::V6(ipv6_slice.source_addr()),
+        //        IpAddr::V6(ipv6_slice.destination_addr()),
+        //    ),
+        //};
 
         Some((
             Endpoint {
-                address: source_addr,
-                port: source_port,
+                address: src_addr,
+                port: src_port,
             },
             Endpoint {
-                address: dest_addr,
-                port: dest_port,
+                address: dst_addr,
+                port: dst_port,
             },
         ))
     }
@@ -236,7 +245,7 @@ struct FilteredStream {
 }
 
 fn packet_stream(mut cap: Capture<Active>) -> Receiver<FilteredStream> {
-    let (tx, rx) = channel::bounded(10);
+    let (tx, rx) = channel::bounded(5);
 
     thread::spawn(move || {
         while let Ok(packet) = cap.next_packet() {
@@ -251,12 +260,12 @@ fn packet_stream(mut cap: Capture<Active>) -> Receiver<FilteredStream> {
                     continue;
                 }
 
-                if let Some(etherparse::TransportSlice::Tcp(header)) = packet.transport {
+                if let Some(etherparse::TransportSlice::Tcp(tcp)) = packet.transport {
                     let filtered_stream = FilteredStream {
                         src: source,
                         dest,
-                        payload: packet.payload.to_vec(),
-                        fin: header.fin(),
+                        payload: tcp.payload().to_vec(),
+                        fin: tcp.fin(),
                     };
 
                     if let Err(e) = tx.send(filtered_stream) {
@@ -299,16 +308,14 @@ fn capture_loop(device: Device, output: Sender<RawStream>, commands: Receiver<Co
                 // TODO Store if tcp fin came from source or dest side and mark that stream only, not take
                 // that. And also send to the stream.
                 // Rename struct, a lot of has name stream.
-                if packet.fin {
-                    if streams.register_fin(index, side) {
-                        let stream = streams.send_stream(index);
+                if packet.fin && streams.register_fin(index, side) {
+                    let stream = streams.send_stream(index);
 
-                        //println!("{:?}", streams);
+                    //println!("{:?}", streams);
 
-                        output
-                            .send(stream)
-                            .unwrap();
-                    }
+                    output
+                        .send(stream)
+                        .unwrap();
                 }
             }
             recv(commands) -> cmd => {

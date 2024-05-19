@@ -1,17 +1,18 @@
-use std::collections::HashMap;
-use std::error::Error;
-use std::thread;
-
-use crossbeam::channel::{self, Receiver, Sender};
-use crossbeam::select;
-use crossterm::event::Event::Key;
-use crossterm::event::{self, KeyCode};
+use crossbeam::{
+    channel::{self, Receiver, Sender},
+    select,
+};
+use crossterm::event::{self, Event::Key, KeyCode};
 use pcap::Device;
-use tui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use tui::style::{Color, Modifier, Style};
-use tui::text::{Span, Spans, Text};
-use tui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
-use tui::{backend::Backend, Frame, Terminal};
+use ratatui::{
+    backend::Backend,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Span, Text},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph},
+    Frame, Terminal,
+};
+use std::{collections::HashMap, error::Error, thread};
 
 use crate::capture_control::Command;
 
@@ -190,7 +191,7 @@ impl State {
         });
     }
 
-    fn filter_stream(&self, req: &Req, resp: &Resp) -> bool {
+    fn filter_stream(&self, _req: &Req, _resp: &Resp) -> bool {
         true
         //if req.path.contains("Cargo") {
         //    return true;
@@ -237,7 +238,7 @@ pub fn new_state(input: Receiver<RawStream>, cmd: Sender<Command>) -> State {
         .map(|d| {
             let addr = d
                 .addresses
-                .get(0)
+                .first()
                 .map(|a| a.addr.to_string())
                 .unwrap_or_default();
 
@@ -269,11 +270,11 @@ pub fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     mut state: State,
 ) -> Result<(), Box<dyn Error>> {
-    let (event_tx, event_rx) = channel::bounded(16);
+    let (event_tx, event_rx) = channel::bounded(5);
 
     let ui_handle = thread::spawn(move || {
         while let Ok(evt) = event::read() {
-            if let Err(_) = event_tx.send(evt) {
+            if event_tx.send(evt).is_err() {
                 break;
             }
         }
@@ -388,7 +389,7 @@ pub fn run_app<B: Backend>(
     }
 }
 
-fn draw_ui<B: Backend>(f: &mut Frame<B>, state: &mut State) {
+fn draw_ui(f: &mut Frame, state: &mut State) {
     let parent_chunk = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -405,7 +406,7 @@ fn draw_ui<B: Backend>(f: &mut Frame<B>, state: &mut State) {
     }
 }
 
-fn list_streams<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect) {
+fn list_streams(f: &mut Frame, state: &mut State, area: Rect) {
     let border_type = match state.selected_frame {
         SelectedFrame::PacketList => BorderType::Double,
         _ => BorderType::Plain,
@@ -422,7 +423,7 @@ fn list_streams<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect) {
     let list = List::new(state.stream_items.clone())
         .block(
             Block::default()
-                .title(Spans::from(title))
+                .title(title)
                 .title_alignment(Alignment::Center)
                 .borders(Borders::ALL)
                 .border_type(border_type),
@@ -433,7 +434,7 @@ fn list_streams<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect) {
     f.render_stateful_widget(list, area, &mut state.selected_stream);
 }
 
-fn request_response<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect) {
+fn request_response(f: &mut Frame, state: &mut State, area: Rect) {
     let mut text = Text::from("");
 
     if let Some(selected) = state.selected_stream.selected() {
@@ -487,7 +488,7 @@ fn request_response<B: Backend>(f: &mut Frame<B>, state: &mut State, area: Rect)
     f.render_widget(content, area);
 }
 
-fn help<B: Backend>(f: &mut Frame<B>) {
+fn help(f: &mut Frame) {
     let vertical_margin = (f.size().height - 10) / 2;
     let horizontal_margin = (f.size().width - 30) / 2;
     let rect = Rect::new(horizontal_margin, vertical_margin, 30, 10);
@@ -503,7 +504,7 @@ fn help<B: Backend>(f: &mut Frame<B>) {
     f.render_widget(help, rect);
 }
 
-fn choose_device<B: Backend>(f: &mut Frame<B>, state: &mut State) {
+fn choose_device(f: &mut Frame, state: &mut State) {
     let (width, height) = (70, 30);
     let vertical_margin = (f.size().height - height) / 2;
     let horizontal_margin = (f.size().width - width) / 2;
@@ -522,9 +523,9 @@ fn choose_device<B: Backend>(f: &mut Frame<B>, state: &mut State) {
     f.render_stateful_widget(devices, rect, &mut state.selected_device);
 }
 
-fn filter_stream<B: Backend>(f: &mut Frame<B>, state: &mut State) {
+fn filter_stream(f: &mut Frame, _state: &mut State) {
     let (width, height) = (70, 30);
     let vertical_margin = (f.size().height - height) / 2;
     let horizontal_margin = (f.size().width - width) / 2;
-    let rect = Rect::new(horizontal_margin, vertical_margin, width, height);
+    let _rect = Rect::new(horizontal_margin, vertical_margin, width, height);
 }
