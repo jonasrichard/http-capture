@@ -1,3 +1,7 @@
+mod devices;
+mod http_info;
+mod packet_list;
+
 use crossbeam::{
     channel::{self, Receiver, Sender},
     select,
@@ -6,10 +10,8 @@ use crossterm::event::{self, Event::Key, KeyCode};
 use pcap::Device;
 use ratatui::{
     backend::Backend,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Span, Text},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph},
+    layout::{Constraint, Direction, Layout, Rect},
+    widgets::{Block, BorderType, Borders, Clear, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 use std::{collections::HashMap, error::Error, thread};
@@ -395,97 +397,15 @@ fn draw_ui(f: &mut Frame, state: &mut State) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(f.size());
 
-    list_streams(f, state, parent_chunk[0]);
+    packet_list::list_streams(f, state, parent_chunk[0]);
 
-    request_response(f, state, parent_chunk[1]);
+    http_info::request_response(f, state, parent_chunk[1]);
 
     match state.selected_frame {
         SelectedFrame::Help => help(f),
-        SelectedFrame::DeviceChooser => choose_device(f, state),
+        SelectedFrame::DeviceChooser => devices::choose_device(f, state),
         _ => (),
     }
-}
-
-fn list_streams(f: &mut Frame, state: &mut State, area: Rect) {
-    let border_type = match state.selected_frame {
-        SelectedFrame::PacketList => BorderType::Double,
-        _ => BorderType::Plain,
-    };
-
-    let title = match state.capture_state {
-        CaptureState::Active => Span::styled(
-            "HTTP streams (capturing)",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        CaptureState::Inactive => Span::raw("HTTP streams"),
-    };
-
-    let list = List::new(state.stream_items.clone())
-        .block(
-            Block::default()
-                .title(title)
-                .title_alignment(Alignment::Center)
-                .borders(Borders::ALL)
-                .border_type(border_type),
-        )
-        .highlight_symbol(">>")
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
-
-    f.render_stateful_widget(list, area, &mut state.selected_stream);
-}
-
-fn request_response(f: &mut Frame, state: &mut State, area: Rect) {
-    let mut text = Text::from("");
-
-    if let Some(selected) = state.selected_stream.selected() {
-        if let Some(s) = &state.streams.get(selected) {
-            let pr = &s.parsed_request;
-
-            text.extend(Text::raw(format!("{} {}\n", pr.method, pr.path)));
-
-            for header in &pr.headers {
-                text.extend(Text::raw(format!("{}: {}\n", header.0, header.1)));
-            }
-
-            text.extend(Text::raw("\n"));
-
-            if let Some(ref body) = pr.body {
-                text.extend(Text::raw(body));
-            }
-
-            text.extend(Text::raw("\n"));
-
-            let resp = &s.parsed_response;
-
-            text.extend(Text::raw(format!("{} {}", resp.code, resp.version)));
-
-            for header in &resp.headers {
-                text.extend(Text::raw(format!("{}: {}\n", header.0, header.1)));
-            }
-
-            text.extend(Text::raw("\n"));
-
-            if let Some(ref body) = resp.body {
-                text.extend(Text::raw(body));
-            }
-        }
-    }
-
-    let border_type = match state.selected_frame {
-        SelectedFrame::PacketDetails => BorderType::Double,
-        _ => BorderType::Plain,
-    };
-
-    let content = Paragraph::new(text)
-        .block(
-            Block::default()
-                .title("list")
-                .borders(Borders::ALL)
-                .border_type(border_type),
-        )
-        .scroll(state.details_scroll);
-
-    f.render_widget(content, area);
 }
 
 fn help(f: &mut Frame) {
@@ -502,25 +422,6 @@ fn help(f: &mut Frame) {
 
     f.render_widget(Clear, rect);
     f.render_widget(help, rect);
-}
-
-fn choose_device(f: &mut Frame, state: &mut State) {
-    let (width, height) = (70, 30);
-    let vertical_margin = (f.size().height - height) / 2;
-    let horizontal_margin = (f.size().width - width) / 2;
-    let rect = Rect::new(horizontal_margin, vertical_margin, width, height);
-
-    let devices = List::new(state.devices.clone())
-        .block(
-            Block::default()
-                .title("Choose device")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Plain),
-        )
-        .highlight_style(Style::default().bg(Color::White));
-
-    f.render_widget(Clear, rect);
-    f.render_stateful_widget(devices, rect, &mut state.selected_device);
 }
 
 fn filter_stream(f: &mut Frame, _state: &mut State) {

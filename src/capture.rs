@@ -8,6 +8,7 @@ use crossbeam::{
     select,
 };
 use etherparse::SlicedPacket;
+use log::info;
 use pcap::{Active, Capture, Device};
 
 use crate::ui::RawStream;
@@ -59,18 +60,6 @@ impl TcpStream {
             ),
             _ => return None,
         };
-
-        //let (source_addr, dest_addr) = match &p.transport {
-        //    None => return None,
-        //    Some(InternetSlice::Ipv4(ipv4_slice, _)) => (
-        //        IpAddr::V4(ipv4_slice.source_addr()),
-        //        IpAddr::V4(ipv4_slice.destination_addr()),
-        //    ),
-        //    Some(InternetSlice::Ipv6(ipv6_slice, _)) => (
-        //        IpAddr::V6(ipv6_slice.source_addr()),
-        //        IpAddr::V6(ipv6_slice.destination_addr()),
-        //    ),
-        //};
 
         Some((
             Endpoint {
@@ -125,9 +114,7 @@ impl Streams {
 
     // TODO pass and endpoint pair rather?
     fn lookup_stream(&self, source: &Endpoint, dest: &Endpoint) -> Option<(usize, EndpointSide)> {
-        let mut i = 0;
-
-        for stream in &self.streams {
+        for (i, stream) in self.streams.iter().enumerate() {
             match stream.same_parties(source, dest) {
                 None => {}
                 Some(EndpointSide::Source) => {
@@ -137,8 +124,6 @@ impl Streams {
                     return Some((i, EndpointSide::Destination));
                 }
             }
-
-            i += 1;
         }
 
         None
@@ -233,6 +218,8 @@ pub fn start_capture(
     let device = devices.remove(i);
 
     thread::spawn(move || {
+        info!("Start capturing on {device:?}");
+
         capture_loop(device, output, commands);
     })
 }
@@ -251,12 +238,12 @@ fn packet_stream(mut cap: Capture<Active>) -> Receiver<FilteredStream> {
         while let Ok(packet) = cap.next_packet() {
             //hexdump(&packet.data);
 
-            let packet = SlicedPacket::from_ethernet(&packet.data).unwrap();
+            let packet = SlicedPacket::from_ethernet(packet.data).unwrap();
 
             if let Some((source, dest)) = TcpStream::from_sliced_packet(&packet) {
                 // TODO implement filtering here
 
-                if source.port != 80 && dest.port != 80 {
+                if source.port != 9000 && dest.port != 9000 {
                     continue;
                 }
 
