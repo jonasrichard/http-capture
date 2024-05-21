@@ -34,7 +34,7 @@ fn main() -> Result<()> {
     let (http_tx, http_rx) = channel::bounded(5);
     let (cmd_tx, cmd_rx) = channel::bounded(5);
 
-    let state = ui::new_state(http_rx, cmd_tx);
+    let state = ui::State::new(http_rx, cmd_tx);
 
     let capture_handle = thread::spawn(move || {
         capture_control::control_loop(cmd_rx, http_tx);

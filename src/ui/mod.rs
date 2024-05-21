@@ -1,3 +1,4 @@
+mod common;
 mod devices;
 mod http_info;
 mod packet_list;
@@ -6,17 +7,22 @@ use crossbeam::{
     channel::{self, Receiver, Sender},
     select,
 };
-use crossterm::event::{self, Event::Key, KeyCode};
-use pcap::Device;
+use crossterm::event::{
+    self,
+    Event::{self, Key},
+    KeyCode, KeyEvent,
+};
 use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
-    widgets::{Block, BorderType, Borders, Clear, ListItem, ListState, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, ListState, Paragraph},
     Frame, Terminal,
 };
-use std::{collections::HashMap, error::Error, thread};
+use std::{error::Error, thread};
 
 use crate::capture_control::Command;
+
+use self::{devices::DevicesWidget, http_info::StreamInfoWidget, packet_list::StreamListWidget};
 
 const HELP: &str = r#"
 C:        Start capture
@@ -46,28 +52,6 @@ impl std::fmt::Debug for RawStream {
     }
 }
 
-pub struct Req {
-    pub method: String,
-    pub path: String,
-    pub version: String,
-    pub headers: HashMap<String, String>,
-    pub body: Option<String>,
-}
-
-pub struct Resp {
-    pub version: String,
-    pub code: u16,
-    pub reason: Option<String>,
-    pub headers: HashMap<String, String>,
-    pub body: Option<String>,
-}
-
-pub struct HttpStream {
-    pub raw_stream: RawStream,
-    pub parsed_request: Req,
-    pub parsed_response: Resp,
-}
-
 #[derive(PartialEq)]
 enum CaptureState {
     Active,
@@ -83,188 +67,145 @@ enum SelectedFrame {
 }
 
 pub struct State {
-    pub streams: Vec<HttpStream>,
-    pub stream_items: Vec<ListItem<'static>>,
     pub input: Receiver<RawStream>,
     pub commands: Sender<Command>,
-    pub selected_stream: ListState,
     capture_state: CaptureState,
     selected_frame: SelectedFrame,
+    pub stream_list_widget: packet_list::StreamListWidget,
+    pub stream_info_widget: http_info::StreamInfoWidget,
+    pub devices_widget: devices::DevicesWidget,
     details_scroll: (u16, u16),
-    devices: Vec<ListItem<'static>>,
-    device_names: Vec<String>,
-    selected_device: ListState,
 }
 
 impl State {
-    fn add_stream(&mut self, stream: RawStream) {
-        // Parse request
-        let mut headers = [httparse::EMPTY_HEADER; 16];
-        let mut parsed_req = httparse::Request::new(&mut headers);
-        let res = parsed_req.parse(stream.request.as_slice()).unwrap();
-
-        if res.is_partial() {
-            return;
-            //panic!("Request is partial {:?}", parsed_req);
+    pub fn new(input: Receiver<RawStream>, cmd: Sender<Command>) -> State {
+        State {
+            input,
+            commands: cmd,
+            capture_state: CaptureState::Inactive,
+            selected_frame: SelectedFrame::PacketList,
+            details_scroll: (0, 0),
+            stream_list_widget: StreamListWidget::new(),
+            stream_info_widget: StreamInfoWidget::new(),
+            devices_widget: DevicesWidget::new(),
         }
-
-        let mut req = Req {
-            method: parsed_req.method.unwrap().to_string(),
-            path: parsed_req.path.unwrap().to_string(),
-            version: parsed_req.version.unwrap().to_string(),
-            headers: HashMap::new(),
-            body: None,
-        };
-
-        for header in parsed_req.headers {
-            req.headers.insert(
-                header.name.to_string(),
-                String::from_utf8(header.value.to_vec()).unwrap(),
-            );
-        }
-
-        let body_start = res.unwrap();
-
-        if body_start < stream.request.len() {
-            req.body = Some(
-                String::from_utf8(stream.request[body_start..].to_vec())
-                    .unwrap_or("Encoding error".to_string()),
-            );
-        }
-
-        // Parse response
-        let mut headers = [httparse::EMPTY_HEADER; 16];
-        let mut parsed_resp = httparse::Response::new(&mut headers);
-        let res = parsed_resp.parse(stream.response.as_slice()).unwrap();
-
-        if res.is_partial() {
-            return;
-            //panic!("Request is partial {:?}", parsed_req);
-        }
-
-        let mut resp = Resp {
-            version: parsed_resp.version.unwrap().to_string(),
-            code: parsed_resp.code.unwrap(),
-            reason: parsed_resp.reason.map(|r| r.to_string()),
-            headers: HashMap::new(),
-            body: None,
-        };
-
-        for header in parsed_resp.headers {
-            resp.headers.insert(
-                header.name.to_string(),
-                String::from_utf8(header.value.to_vec()).unwrap(),
-            );
-        }
-
-        if !self.filter_stream(&req, &resp) {
-            return;
-        }
-
-        let body_start = res.unwrap();
-
-        if body_start < stream.response.len() {
-            resp.body = Some(
-                String::from_utf8(stream.response[body_start..].to_vec())
-                    .unwrap_or("Encoding error".to_string()),
-            );
-        }
-
-        let req_len = match req.body {
-            None => 0,
-            Some(ref b) => b.len(),
-        };
-
-        let resp_len = match resp.body {
-            None => 0,
-            Some(ref b) => b.len(),
-        };
-
-        let item = ListItem::new(format!(
-            "{} {} {} ({} b / {} b)",
-            req.version, req.method, req.path, req_len, resp_len
-        ));
-
-        self.stream_items.push(item);
-        self.streams.push(HttpStream {
-            raw_stream: stream,
-            parsed_request: req,
-            parsed_response: resp,
-        });
     }
 
-    fn filter_stream(&self, _req: &Req, _resp: &Resp) -> bool {
-        true
-        //if req.path.contains("Cargo") {
-        //    return true;
-        //}
+    fn handle_event(&mut self, event: Event) {
+        if let Key(key) = event {
+            // Global key shortcuts
+            match key.code {
+                KeyCode::Char('q') => {}
+                KeyCode::Char('c') => {
+                    if self.capture_state == CaptureState::Inactive {
+                        self.selected_frame = SelectedFrame::DeviceChooser;
+                        return;
+                    }
+                }
+                KeyCode::Char('s') => {
+                    if self.capture_state == CaptureState::Active {
+                        self.capture_state = CaptureState::Inactive;
+                        self.commands.send(Command::StopCapture).unwrap();
+                    }
+                }
+                KeyCode::Char('h') => {
+                    self.selected_frame = SelectedFrame::Help;
+                }
+                _ => {}
+            }
 
-        //false
+            match self.selected_frame {
+                SelectedFrame::PacketList => self.handle_key_stream_list(key.code),
+                SelectedFrame::PacketDetails => self.handle_key_http_info(key.code),
+                SelectedFrame::Help => todo!(),
+                SelectedFrame::DeviceChooser => todo!(),
+                _ => {}
+            }
+        }
     }
 
-    fn move_up(list_state: &mut ListState) {
-        let selected = match list_state.selected() {
-            Some(p) => {
-                if p == 0 {
-                    Some(0)
-                } else {
-                    Some(p - 1)
+    fn handle_key_stream_list(&mut self, key_code: KeyCode) {
+        self.stream_list_widget.handle_key(key_code);
+
+        match key_code {
+            KeyCode::Up => {
+                self.stream_info_widget.reset_scroll();
+            }
+            KeyCode::Down => {
+                self.stream_info_widget.reset_scroll();
+            }
+            KeyCode::Tab => {
+                self.selected_frame = SelectedFrame::PacketDetails;
+                self.stream_info_widget.is_selected = true;
+            }
+            KeyCode::Char('q') => {
+                // TODO quit, stop capturing, join to ui_handle
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_http_info(&mut self, key_code: KeyCode) {
+        self.stream_info_widget.handle_key(key_code);
+
+        match key_code {
+            KeyCode::Tab => {
+                self.selected_frame = SelectedFrame::PacketList;
+                self.stream_list_widget.is_selected = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_device_widget(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.selected_frame = SelectedFrame::PacketList;
+            }
+            KeyCode::Up => {
+                move_up(&mut self.devices_widget.selected_device);
+            }
+            KeyCode::Down => {
+                move_down(
+                    &mut self.devices_widget.selected_device,
+                    self.devices_widget.devices.len(),
+                );
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if let Some(selected) = self.devices_widget.selected_device.selected() {
+                    let dev = self.devices_widget.device_names.get(selected).unwrap();
+
+                    self.selected_frame = SelectedFrame::PacketList;
+                    self.capture_state = CaptureState::Active;
+                    // TODO in the layout we can have some minibuffer for the messages
+                    self.commands
+                        .send(Command::StartCapture(dev.to_string()))
+                        .unwrap();
                 }
             }
-            None => Some(0),
-        };
-
-        list_state.select(selected);
+            _ => (),
+        }
     }
 
-    fn move_down(list_state: &mut ListState, len: usize) {
-        let selected = match list_state.selected() {
-            Some(p) => {
-                if p + 1 == len {
-                    Some(p)
-                } else {
-                    Some(p + 1)
-                }
-            }
-            None => Some(0),
-        };
+    fn draw_ui(&mut self, f: &mut Frame) {
+        let parent_chunk = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(f.size());
 
-        list_state.select(selected);
-    }
-}
+        self.stream_list_widget.draw_ui(
+            f,
+            self.capture_state == CaptureState::Active,
+            parent_chunk[0],
+        );
 
-pub fn new_state(input: Receiver<RawStream>, cmd: Sender<Command>) -> State {
-    let devices = Device::list()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|d| {
-            let addr = d
-                .addresses
-                .first()
-                .map(|a| a.addr.to_string())
-                .unwrap_or_default();
+        self.stream_info_widget.draw_ui(f, parent_chunk[1]);
 
-            ListItem::new(format!("{} - {}", d.name, addr))
-        })
-        .collect();
-
-    let mut device_names = vec![];
-    for dev in Device::list().unwrap() {
-        device_names.push(dev.name);
-    }
-
-    State {
-        streams: vec![],
-        input,
-        commands: cmd,
-        selected_stream: ListState::default(),
-        stream_items: vec![],
-        capture_state: CaptureState::Inactive,
-        selected_frame: SelectedFrame::PacketList,
-        details_scroll: (0, 0),
-        devices,
-        device_names,
-        selected_device: ListState::default(),
+        match self.selected_frame {
+            SelectedFrame::Help => help(f),
+            SelectedFrame::DeviceChooser => self.devices_widget.draw_ui(f),
+            _ => (),
+        }
     }
 }
 
@@ -274,7 +215,7 @@ pub fn run_app<B: Backend>(
 ) -> Result<(), Box<dyn Error>> {
     let (event_tx, event_rx) = channel::bounded(5);
 
-    let ui_handle = thread::spawn(move || {
+    let _ui_handle = thread::spawn(move || {
         while let Ok(evt) = event::read() {
             if event_tx.send(evt).is_err() {
                 break;
@@ -283,107 +224,18 @@ pub fn run_app<B: Backend>(
     });
 
     loop {
-        terminal.draw(|f| draw_ui(f, &mut state))?;
+        terminal.draw(|f| state.draw_ui(f));
 
         select! {
             recv(event_rx) -> event => match event {
-                Ok(Key(key)) => {
-                    match state.selected_frame {
-                        SelectedFrame::PacketList => match key.code {
-                            KeyCode::Up => {
-                                State::move_up(&mut state.selected_stream);
-                                state.details_scroll = (0, 0);
-                            }
-                            KeyCode::Down => {
-                                State::move_down(&mut state.selected_stream, state.streams.len());
-                                state.details_scroll = (0, 0);
-                            }
-                            KeyCode::Tab => {
-                                state.selected_frame = SelectedFrame::PacketDetails;
-                            }
-                            _ => (),
-                        },
-                        SelectedFrame::PacketDetails => match key.code {
-                            KeyCode::Tab => {
-                                state.selected_frame = SelectedFrame::PacketList;
-                            }
-                            KeyCode::Up => {
-                                if state.details_scroll.0 > 0 {
-                                    state.details_scroll.0 -= 1;
-                                }
-                            }
-                            KeyCode::Down => {
-                                // TODO text.height() tells how much we can scroll
-                                state.details_scroll.0 += 1;
-                            }
-                            KeyCode::PageUp => {
-                                if state.details_scroll.0 > 15 {
-                                    state.details_scroll.0 -= 15;
-                                } else {
-                                    state.details_scroll.0 = 0;
-                                }
-                            }
-                            KeyCode::PageDown => {
-                                // TODO stop scrolling
-                                state.details_scroll.0 += 15;
-                            }
-                            _ => (),
-                        },
-                        SelectedFrame::Help => match key.code {
-                            KeyCode::Esc => {
-                                state.selected_frame = SelectedFrame::PacketList;
-                            }
-                            _ => (),
-                        },
-                        SelectedFrame::DeviceChooser => match key.code {
-                            KeyCode::Esc => {
-                                state.selected_frame = SelectedFrame::PacketList;
-                            }
-                            KeyCode::Up => {
-                                State::move_up(&mut state.selected_device);
-                            }
-                            KeyCode::Down => {
-                                State::move_down(&mut state.selected_device, state.devices.len());
-                            }
-                            KeyCode::Enter | KeyCode::Char(' ') => {
-                                if let Some(selected) = state.selected_device.selected() {
-                                    let dev = state.device_names.get(selected).unwrap();
-
-                                    state.selected_frame = SelectedFrame::PacketList;
-                                    state.capture_state = CaptureState::Active;
-                                    state
-                                        .commands
-                                        .send(Command::StartCapture(dev.to_string()))?;
-                                }
-                            }
-                            _ => (),
-                        },
-                        SelectedFrame::FilterSetting => (),
-                    }
-
-                    match key.code {
-                        KeyCode::Char('q') => {
-                            return Ok(());
-                        }
-                        KeyCode::Char('c') if state.capture_state == CaptureState::Inactive => {
-                            state.selected_frame = SelectedFrame::DeviceChooser;
-                        }
-                        KeyCode::Char('s') if state.capture_state == CaptureState::Active => {
-                            state.capture_state = CaptureState::Inactive;
-                            state.commands.send(Command::StopCapture)?;
-                        }
-                        KeyCode::Char('h') => {
-                            state.selected_frame = SelectedFrame::Help;
-                        }
-                        _ => (),
-                    }
-                },
-                Ok(_) => (),
-                Err(_) => todo!(),
+                Ok(evt) => {
+                    state.handle_event(evt);
+                }
+                Err(_) => {}
             },
             recv(state.input) -> stream => match stream {
                 Ok(stream) => {
-                    state.add_stream(stream);
+                    state.stream_list_widget.add_stream(stream);
                 },
                 Err(e) => panic!("{:?}", e),
             }
@@ -391,21 +243,34 @@ pub fn run_app<B: Backend>(
     }
 }
 
-fn draw_ui(f: &mut Frame, state: &mut State) {
-    let parent_chunk = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(f.size());
+fn move_up(list_state: &mut ListState) {
+    let selected = match list_state.selected() {
+        Some(p) => {
+            if p == 0 {
+                Some(0)
+            } else {
+                Some(p - 1)
+            }
+        }
+        None => Some(0),
+    };
 
-    packet_list::list_streams(f, state, parent_chunk[0]);
+    list_state.select(selected);
+}
 
-    http_info::request_response(f, state, parent_chunk[1]);
+fn move_down(list_state: &mut ListState, len: usize) {
+    let selected = match list_state.selected() {
+        Some(p) => {
+            if p + 1 == len {
+                Some(p)
+            } else {
+                Some(p + 1)
+            }
+        }
+        None => Some(0),
+    };
 
-    match state.selected_frame {
-        SelectedFrame::Help => help(f),
-        SelectedFrame::DeviceChooser => devices::choose_device(f, state),
-        _ => (),
-    }
+    list_state.select(selected);
 }
 
 fn help(f: &mut Frame) {
@@ -424,9 +289,9 @@ fn help(f: &mut Frame) {
     f.render_widget(help, rect);
 }
 
-fn filter_stream(f: &mut Frame, _state: &mut State) {
-    let (width, height) = (70, 30);
-    let vertical_margin = (f.size().height - height) / 2;
-    let horizontal_margin = (f.size().width - width) / 2;
-    let _rect = Rect::new(horizontal_margin, vertical_margin, width, height);
-}
+//fn filter_stream(f: &mut Frame, _state: &mut State) {
+//    let (width, height) = (70, 30);
+//    let vertical_margin = (f.size().height - height) / 2;
+//    let horizontal_margin = (f.size().width - width) / 2;
+//    let _rect = Rect::new(horizontal_margin, vertical_margin, width, height);
+//}

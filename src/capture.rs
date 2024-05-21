@@ -204,7 +204,9 @@ fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredS
 
 fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: Receiver<Command>) {
     // Loopback packets are parsed somehow else
-    let loopback = device.flags.is_loopback();
+    //let loopback = device.flags.is_loopback();
+
+    let loopback = false;
 
     let mut cap = Capture::from_device(device)
         .unwrap()
