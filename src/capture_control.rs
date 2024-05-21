@@ -27,7 +27,7 @@ pub fn control_loop(cmd: Receiver<Command>, output: Sender<RawStream>) {
 pub fn start_capture(interface: String, packet_tx: Sender<RawStream>) -> Sender<capture::Command> {
     let (command_tx, command_rx) = channel::bounded(5);
 
-    capture::start_capture(interface, packet_tx, command_rx);
+    capture::start_capture(interface, 9000, packet_tx, command_rx);
 
     command_tx
 }
