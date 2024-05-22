@@ -3,7 +3,7 @@ use crossbeam::{
     select,
 };
 use etherparse::{Ipv4Header, SlicedPacket, TcpHeader};
-use log::info;
+use log::{error, info};
 use pcap::{Active, Capture, Device};
 use std::thread::{self, JoinHandle};
 
@@ -111,9 +111,13 @@ pub fn start_capture(
     let device = devices.remove(i);
 
     thread::spawn(move || {
+        let device_name = device.name.to_string();
+
         info!("Start capturing on {device:?}");
 
         capture_loop(device, port, output, commands);
+
+        info!("Stop capturing on {device_name}");
     })
 }
 
@@ -150,6 +154,8 @@ fn from_loopback_packet(data: &[u8]) -> (Ipv4Header, TcpHeader, &[u8]) {
 fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredStream> {
     let (tx, rx) = channel::bounded(5);
 
+    info!("Starting packet stream");
+
     thread::spawn(move || {
         while let Ok(packet) = cap.next_packet() {
             //hexdump(&packet.data);
@@ -167,7 +173,7 @@ fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredS
                     };
 
                     if let Err(e) = tx.send(filtered_stream) {
-                        eprintln!("Error during sending {e:?}");
+                        error!("Error during sending {e:?}");
 
                         break;
                     }
@@ -189,7 +195,7 @@ fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredS
                         };
 
                         if let Err(e) = tx.send(filtered_stream) {
-                            eprintln!("Error during sending {e:?}");
+                            error!("Error during sending {e:?}");
 
                             break;
                         }
@@ -204,9 +210,7 @@ fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredS
 
 fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: Receiver<Command>) {
     // Loopback packets are parsed somehow else
-    //let loopback = device.flags.is_loopback();
-
-    let loopback = false;
+    let loopback = device.flags.is_loopback();
 
     let mut cap = Capture::from_device(device)
         .unwrap()
@@ -214,8 +218,11 @@ fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: 
         .open()
         .unwrap();
 
-    cap.filter(format!("tcp port {port}").as_str(), true)
-        .unwrap();
+    if let Err(e) = cap.filter(format!("tcp port {port}").as_str(), true) {
+        error!("Error {e:?}");
+
+        return;
+    }
 
     let mut streams = Streams::new();
 
@@ -243,9 +250,9 @@ fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: 
 
                     //println!("{:?}", streams);
 
-                    output
-                        .send(stream)
-                        .unwrap();
+                    if let Err(e) = output.send(stream) {
+                        error!("Error {e:?}");
+                    }
                 }
             }
             recv(commands) -> cmd => {
@@ -253,7 +260,11 @@ fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: 
                     Ok(Command::StopCapture) => {
                         return;
                     }
-                    _ => {}
+                    Err(e) => {
+                        error!("Error {e:?}");
+
+                        return;
+                    }
                 }
             }
         }
@@ -278,5 +289,5 @@ fn hexdump(data: &[u8]) {
         println!("|{}|", line);
     }
 
-    println!("");
+    println!();
 }

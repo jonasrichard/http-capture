@@ -1,7 +1,9 @@
 use crossbeam::channel::{self, Receiver, Sender};
+use log::info;
 
 use crate::{capture, ui::stream::RawStream};
 
+#[derive(Debug)]
 pub enum Command {
     StartCapture(String),
     StopCapture,
@@ -11,6 +13,8 @@ pub fn control_loop(cmd: Receiver<Command>, output: Sender<RawStream>) {
     let mut command_sender = None;
 
     while let Ok(command) = cmd.recv() {
+        info!("Command arrived: {command:?}");
+
         match command {
             Command::StartCapture(interface) => {
                 command_sender = Some(start_capture(interface, output.clone()));

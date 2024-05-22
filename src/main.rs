@@ -31,8 +31,8 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
 
-    let (http_tx, http_rx) = channel::bounded(5);
-    let (cmd_tx, cmd_rx) = channel::bounded(5);
+    let (http_tx, http_rx) = channel::bounded(32);
+    let (cmd_tx, cmd_rx) = channel::bounded(4);
 
     let state = ui::State::new(http_rx, cmd_tx);
 
@@ -67,9 +67,11 @@ impl Log for FileLog {
 
             writeln!(
                 f,
-                "{} - {} - {}",
+                "{} - {} - {:?}:{:?} - {}",
                 Local::now().format("%Y-%m-%d %H:%M:%S"),
                 record.level(),
+                record.file(),
+                record.line(),
                 record.args()
             )
             .unwrap();

@@ -10,6 +10,7 @@ use crossterm::event::{
     Event::{self, Key},
     KeyCode,
 };
+use log::error;
 use pcap::Device;
 use ratatui::{
     backend::Backend,
@@ -362,20 +363,28 @@ pub fn run_app<B: Backend>(
     });
 
     loop {
-        terminal.draw(|f| state.draw_ui(f));
+        if let Err(e) = terminal.draw(|f| state.draw_ui(f)) {
+            error!("Error during draw_ui {e:?}");
+        }
 
         select! {
             recv(event_rx) -> event => match event {
                 Ok(evt) => {
                     state.handle_event(evt);
                 }
-                Err(_) => {}
+                Err(e) => {
+                    error!("Error in run_app recv: {e:?}");
+                }
             },
             recv(state.input) -> stream => match stream {
                 Ok(stream) => {
                     state.add_stream(stream);
                 },
-                Err(e) => panic!("{:?}", e),
+                Err(e) => {
+                    error!("Error in run_app loop: {e:?}");
+
+                    return Ok(())
+                }
             }
         }
     }
@@ -412,7 +421,7 @@ fn move_down(list_state: &mut ListState, len: usize) {
 }
 
 fn help(f: &mut Frame) {
-    let rect = common::center_rect(&f, 30, 10);
+    let rect = common::center_rect(f, 30, 10);
 
     let help = Paragraph::new(HELP).block(
         Block::default()
