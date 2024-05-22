@@ -208,9 +208,19 @@ fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredS
     rx
 }
 
+#[cfg(target_os = "macos")]
+fn is_loopback(device: &Device) -> bool {
+    device.flags.is_loopback()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_loopback(_: &Device) -> bool {
+    false
+}
+
 fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: Receiver<Command>) {
     // Loopback packets are parsed somehow else
-    let loopback = device.flags.is_loopback();
+    let loopback = is_loopback(&device);
 
     let mut cap = match Capture::from_device(device)
         .unwrap()

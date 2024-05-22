@@ -81,16 +81,22 @@ impl State {
         }
     }
 
-    fn handle_event(&mut self, event: Event) {
+    fn handle_event(&mut self, event: Event) -> bool {
         if let Key(key) = event {
             // Global key shortcuts
             match key.code {
-                KeyCode::Char('q') => {}
+                KeyCode::Char('q') => {
+                    if self.capture_state == CaptureState::Active {
+                        self.commands.send(Command::StopCapture).unwrap();
+                    }
+
+                    return false;
+                }
                 KeyCode::Char('c') => {
                     if self.capture_state == CaptureState::Inactive {
                         self.set_selected_window(SelectedWindow::DeviceChooser);
 
-                        return;
+                        return true;
                     }
                 }
                 KeyCode::Char('s') => {
@@ -113,6 +119,8 @@ impl State {
                 _ => {}
             }
         }
+
+        true
     }
 
     fn handle_key_stream_list(&mut self, key_code: KeyCode) {
@@ -362,7 +370,7 @@ pub fn run_app<B: Backend>(
         }
     });
 
-    loop {
+    'main: loop {
         if let Err(e) = terminal.draw(|f| state.draw_ui(f)) {
             error!("Error during draw_ui {e:?}");
         }
@@ -370,7 +378,9 @@ pub fn run_app<B: Backend>(
         select! {
             recv(event_rx) -> event => match event {
                 Ok(evt) => {
-                    state.handle_event(evt);
+                    if !state.handle_event(evt) {
+                        break 'main Ok(())
+                    }
                 }
                 Err(e) => {
                     error!("Error in run_app recv: {e:?}");
