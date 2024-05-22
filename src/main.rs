@@ -16,7 +16,7 @@ use std::{
 mod capture;
 mod capture_control;
 mod stream;
-mod ui;
+pub mod ui;
 
 struct FileLog {
     file: Mutex<File>,

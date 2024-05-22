@@ -8,7 +8,7 @@ use pcap::{Active, Capture, Device};
 use std::thread::{self, JoinHandle};
 
 use crate::stream::{Endpoint, EndpointSide, TcpStream};
-use crate::ui::RawStream;
+use crate::ui::stream::RawStream;
 
 /// The stream storage where streams stored as a single vector and when
 /// a new endpoint pair comes we can say if there is already a living

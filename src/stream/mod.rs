@@ -4,7 +4,7 @@ use std::net::IpAddr;
 
 use etherparse::{Ipv4Header, SlicedPacket, TcpHeader};
 
-use crate::ui::RawStream;
+use crate::ui::stream::RawStream;
 
 /// Identifies an endpoint.
 #[derive(Debug, PartialEq)]

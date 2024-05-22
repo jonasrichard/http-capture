@@ -1,6 +1,6 @@
 use crossbeam::channel::{self, Receiver, Sender};
 
-use crate::{capture, ui::RawStream};
+use crate::{capture, ui::stream::RawStream};
 
 pub enum Command {
     StartCapture(String),
