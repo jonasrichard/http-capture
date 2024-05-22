@@ -212,11 +212,18 @@ fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: 
     // Loopback packets are parsed somehow else
     let loopback = device.flags.is_loopback();
 
-    let mut cap = Capture::from_device(device)
+    let mut cap = match Capture::from_device(device)
         .unwrap()
         .immediate_mode(true)
         .open()
-        .unwrap();
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Error {e:?}");
+
+            return;
+        }
+    };
 
     if let Err(e) = cap.filter(format!("tcp port {port}").as_str(), true) {
         error!("Error {e:?}");

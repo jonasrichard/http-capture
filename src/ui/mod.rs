@@ -156,7 +156,7 @@ impl State {
                 move_down(&mut self.selected_device, self.devices.len());
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
-                if let Some(dev) = self.selected_device.selected() {
+                if let Some(dev) = self.get_selected_device_name() {
                     self.set_selected_window(SelectedWindow::PacketList);
                     self.set_capture_state(CaptureState::Active);
                     // TODO in the layout we can have some minibuffer for the messages
