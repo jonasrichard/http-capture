@@ -246,7 +246,7 @@ impl State {
     }
 
     pub fn stream_info_draw_ui(&mut self, f: &mut Frame, area: Rect) {
-        let mut text = Text::from("");
+        let mut text = Text::default();
 
         if let Some(selected) = &self.selected_stream.selected() {
             if let Some(selected_stream) = self.streams.get(*selected) {
@@ -263,7 +263,8 @@ impl State {
         let content = Paragraph::new(text)
             .block(
                 Block::default()
-                    .title("list")
+                    .title("HTTP Stream Info")
+                    .title_alignment(Alignment::Center)
                     .borders(Borders::ALL)
                     .border_type(border_type),
             )

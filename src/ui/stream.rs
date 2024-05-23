@@ -1,6 +1,10 @@
 use std::{collections::HashMap, net::IpAddr};
 
-use ratatui::{text::Text, widgets::Row};
+use ratatui::{
+    style::{Color, Modifier, Style, Styled},
+    text::{Line, Span, Text},
+    widgets::Row,
+};
 
 /// RawStream is a set of packets collected by the capture module.
 ///
@@ -176,10 +180,18 @@ impl HttpStream {
     pub fn write_to_text(&self, text: &mut Text) {
         let pr = &self.parsed_request;
 
-        text.extend(Text::raw(format!("{} {}\n", pr.method, pr.path)));
+        let green = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
+
+        text.push_line(Line::styled(format!("{} {}\n", pr.method, pr.path), green));
+
+        let red = Style::new().fg(Color::LightRed);
 
         for header in &pr.headers {
-            text.extend(Text::raw(format!("{}: {}\n", header.0, header.1)));
+            let mut line = Line::styled(format!("{}:", header.0), red);
+
+            line.push_span(Span::styled(format!(" {}\n", header.1), Color::Gray));
+
+            text.push_line(line);
         }
 
         text.extend(Text::raw("\n"));
@@ -192,10 +204,17 @@ impl HttpStream {
 
         let resp = &self.parsed_response;
 
-        text.extend(Text::raw(format!("{} {}", resp.code, resp.version)));
+        text.push_line(Line::styled(
+            format!("{} {}", resp.code, resp.version),
+            green,
+        ));
 
         for header in &resp.headers {
-            text.extend(Text::raw(format!("{}: {}\n", header.0, header.1)));
+            let mut line = Line::styled(format!("{}:", header.0), red);
+
+            line.push_span(Span::styled(format!(" {}\n", header.1), Color::Gray));
+
+            text.push_line(line);
         }
 
         text.extend(Text::raw("\n"));

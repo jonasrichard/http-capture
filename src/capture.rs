@@ -121,6 +121,10 @@ pub fn start_capture(
     })
 }
 
+// TODO here we need to store the packets for saving
+// once we write the packets in a file (after a successful
+// matching to the filters) we should drop the packets
+// and keep the other fiels from the FilteredStream
 struct FilteredStream {
     ts: i64,
     src: Endpoint,
