@@ -17,7 +17,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Span, Text},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph},
+    widgets::{
+        Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Row,
+        Table, TableState,
+    },
     Frame, Terminal,
 };
 use std::{error::Error, thread};
@@ -54,8 +57,8 @@ pub struct State {
     capture_state: CaptureState,
     selected_window: SelectedWindow,
     streams: Vec<HttpStream>,
-    stream_items: Vec<ListItem<'static>>,
-    selected_stream: ListState,
+    stream_items: Vec<Row<'static>>,
+    selected_stream: TableState,
     details_scroll: (u16, u16),
     devices: Vec<ListItem<'static>>,
     device_names: Vec<String>,
@@ -73,7 +76,7 @@ impl State {
             selected_window: SelectedWindow::PacketList,
             streams: vec![],
             stream_items: vec![],
-            selected_stream: ListState::default(),
+            selected_stream: TableState::default(),
             details_scroll: (0, 0),
             devices,
             device_names,
@@ -126,11 +129,11 @@ impl State {
     fn handle_key_stream_list(&mut self, key_code: KeyCode) {
         match key_code {
             KeyCode::Up => {
-                move_up(&mut self.selected_stream);
+                table_move_up(&mut self.selected_stream);
                 self.reset_scroll();
             }
             KeyCode::Down => {
-                move_down(&mut self.selected_stream, self.stream_items.len());
+                table_move_down(&mut self.selected_stream, self.stream_items.len());
                 self.reset_scroll();
             }
             KeyCode::Tab => self.set_selected_window(SelectedWindow::PacketDetails),
@@ -158,10 +161,10 @@ impl State {
                 self.set_selected_window(SelectedWindow::PacketList);
             }
             KeyCode::Up => {
-                move_up(&mut self.selected_device);
+                list_move_up(&mut self.selected_device);
             }
             KeyCode::Down => {
-                move_down(&mut self.selected_device, self.devices.len());
+                list_move_down(&mut self.selected_device, self.devices.len());
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if let Some(dev) = self.get_selected_device_name() {
@@ -193,23 +196,6 @@ impl State {
         }
     }
 
-    pub fn add_stream(&mut self, stream: RawStream) {
-        if let Some((item, http_stream)) = stream.to_list_item() {
-            self.stream_items.push(item);
-            self.streams.push(http_stream);
-        }
-    }
-
-    pub fn get_selected_device_name(&self) -> Option<String> {
-        if let Some(selected) = self.selected_device.selected() {
-            let dev = self.device_names.get(selected).unwrap();
-
-            Some(dev.to_string())
-        } else {
-            None
-        }
-    }
-
     /// Draw the stream list widget
     pub fn stream_list_draw_ui(&mut self, f: &mut Frame, area: Rect) {
         let border_type = if self.selected_window == SelectedWindow::PacketList {
@@ -227,52 +213,36 @@ impl State {
             Span::raw("HTTP streams")
         };
 
-        let list = List::new(self.stream_items.clone())
-            .block(
-                Block::default()
-                    .title(title)
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::ALL)
-                    .border_type(border_type),
-            )
-            .highlight_symbol(">>")
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+        let stream_list = Table::new(
+            self.stream_items.clone(),
+            vec![
+                Constraint::Length(12),
+                Constraint::Length(20),
+                Constraint::Length(20),
+                Constraint::Fill(1),
+            ],
+        )
+        .header(
+            Row::new(vec!["Timestamp", "Source", "Destination", "Path"])
+                .style(Style::new().fg(Color::White).add_modifier(Modifier::BOLD)),
+        )
+        .block(
+            Block::default()
+                .title(title)
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL)
+                .border_type(border_type),
+        )
+        .highlight_style(
+            Style::new()
+                .bg(Color::LightGreen)
+                .fg(Color::Black)
+                .add_modifier(Modifier::ITALIC),
+        )
+        .highlight_symbol("> ")
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
 
-        f.render_stateful_widget(list, area, &mut self.selected_stream);
-    }
-
-    fn set_selected_window(&mut self, s: SelectedWindow) {
-        self.selected_window = s;
-    }
-
-    fn set_capture_state(&mut self, c: CaptureState) {
-        self.capture_state = c;
-    }
-
-    pub fn reset_scroll(&mut self) {
-        self.details_scroll = (0, 0);
-    }
-
-    pub fn scroll_up(&mut self) {
-        if self.details_scroll.0 > 0 {
-            self.details_scroll.0 -= 1;
-        }
-    }
-
-    pub fn scroll_down(&mut self) {
-        self.details_scroll.0 += 1;
-    }
-
-    pub fn scroll_page_up(&mut self) {
-        if self.details_scroll.0 > 15 {
-            self.details_scroll.0 -= 15;
-        } else {
-            self.details_scroll.0 = 0;
-        }
-    }
-
-    pub fn scroll_page_down(&mut self) {
-        self.details_scroll.0 += 15;
+        f.render_stateful_widget(stream_list, area, &mut self.selected_stream);
     }
 
     pub fn stream_info_draw_ui(&mut self, f: &mut Frame, area: Rect) {
@@ -329,6 +299,58 @@ impl State {
             dialog_layout[0],
         );
         f.render_stateful_widget(devices, dialog_layout[1], &mut self.selected_device);
+    }
+
+    fn set_selected_window(&mut self, s: SelectedWindow) {
+        self.selected_window = s;
+    }
+
+    fn set_capture_state(&mut self, c: CaptureState) {
+        self.capture_state = c;
+    }
+
+    pub fn reset_scroll(&mut self) {
+        self.details_scroll = (0, 0);
+    }
+
+    pub fn scroll_up(&mut self) {
+        if self.details_scroll.0 > 0 {
+            self.details_scroll.0 -= 1;
+        }
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.details_scroll.0 += 1;
+    }
+
+    pub fn scroll_page_up(&mut self) {
+        if self.details_scroll.0 > 15 {
+            self.details_scroll.0 -= 15;
+        } else {
+            self.details_scroll.0 = 0;
+        }
+    }
+
+    pub fn scroll_page_down(&mut self) {
+        self.details_scroll.0 += 15;
+    }
+
+    /// Add a new RawStream to the UI and convert it to a HttpStream.
+    pub fn add_stream(&mut self, stream: RawStream) {
+        if let Ok(http_stream) = HttpStream::try_from(stream) {
+            self.stream_items.push(http_stream.clone().into());
+            self.streams.push(http_stream);
+        }
+    }
+
+    pub fn get_selected_device_name(&self) -> Option<String> {
+        if let Some(selected) = self.selected_device.selected() {
+            let dev = self.device_names.get(selected).unwrap();
+
+            Some(dev.to_string())
+        } else {
+            None
+        }
     }
 }
 
@@ -400,34 +422,44 @@ pub fn run_app<B: Backend>(
     }
 }
 
-fn move_up(list_state: &mut ListState) {
-    let selected = match list_state.selected() {
-        Some(p) => {
-            if p == 0 {
-                Some(0)
-            } else {
-                Some(p - 1)
-            }
-        }
-        None => Some(0),
-    };
-
-    list_state.select(selected);
+fn list_move_up(list_state: &mut ListState) {
+    list_state.select(move_up(list_state.selected()));
 }
 
-fn move_down(list_state: &mut ListState, len: usize) {
-    let selected = match list_state.selected() {
-        Some(p) => {
-            if p + 1 == len {
-                Some(p)
-            } else {
-                Some(p + 1)
-            }
-        }
-        None => Some(0),
-    };
+fn list_move_down(list_state: &mut ListState, len: usize) {
+    list_state.select(move_down(list_state.selected(), len));
+}
 
-    list_state.select(selected);
+fn table_move_up(tbl_state: &mut TableState) {
+    tbl_state.select(move_up(tbl_state.selected()));
+}
+
+fn table_move_down(tbl_state: &mut TableState, len: usize) {
+    tbl_state.select(move_down(tbl_state.selected(), len));
+}
+
+fn move_up(pos: Option<usize>) -> Option<usize> {
+    if let Some(p) = pos {
+        if p == 0 {
+            Some(0)
+        } else {
+            Some(p - 1)
+        }
+    } else {
+        Some(0)
+    }
+}
+
+fn move_down(pos: Option<usize>, len: usize) -> Option<usize> {
+    if let Some(p) = pos {
+        if p + 1 == len {
+            Some(p)
+        } else {
+            Some(p + 1)
+        }
+    } else {
+        Some(0)
+    }
 }
 
 fn help(f: &mut Frame) {

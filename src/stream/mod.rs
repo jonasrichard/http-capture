@@ -27,6 +27,7 @@ pub struct Party {
 
 pub struct TcpStream {
     id: usize,
+    timestamp: i64,
     source: Party,
     destination: Party,
     request: Vec<u8>,
@@ -35,9 +36,10 @@ pub struct TcpStream {
 }
 
 impl TcpStream {
-    pub fn new(id: usize, source: Endpoint, destination: Endpoint) -> TcpStream {
+    pub fn new(id: usize, timestamp: i64, source: Endpoint, destination: Endpoint) -> TcpStream {
         TcpStream {
             id,
+            timestamp,
             source: Party {
                 side: EndpointSide::Source,
                 endpoint: source,
@@ -75,6 +77,11 @@ impl TcpStream {
     pub fn convert_to_raw_stream(self) -> RawStream {
         RawStream {
             id: self.id,
+            ts: self.timestamp,
+            source_addr: self.source.endpoint.address,
+            source_port: self.source.endpoint.port,
+            dest_addr: self.destination.endpoint.address,
+            dest_port: self.destination.endpoint.port,
             request: self.request,
             response: self.response,
         }

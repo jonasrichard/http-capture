@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, net::IpAddr};
 
-use ratatui::{text::Text, widgets::ListItem};
+use ratatui::{text::Text, widgets::Row};
 
 /// RawStream is a set of packets collected by the capture module.
 ///
@@ -8,16 +8,28 @@ use ratatui::{text::Text, widgets::ListItem};
 /// and the response are already normalized as byte arrays.
 pub struct RawStream {
     pub id: usize,
+    pub ts: i64,
+    pub source_addr: IpAddr,
+    pub source_port: u16,
+    pub dest_addr: IpAddr,
+    pub dest_port: u16,
     pub request: Vec<u8>,
     pub response: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub struct HttpStream {
-    pub raw_stream: RawStream,
+    pub id: usize,
+    pub timestamp: i64,
+    pub source_addr: IpAddr,
+    pub source_port: u16,
+    pub dest_addr: IpAddr,
+    pub dest_port: u16,
     pub parsed_request: Req,
     pub parsed_response: Resp,
 }
 
+#[derive(Clone)]
 pub struct Req {
     pub method: String,
     pub path: String,
@@ -26,6 +38,7 @@ pub struct Req {
     pub body: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Resp {
     pub version: String,
     pub code: u16,
@@ -50,16 +63,17 @@ impl std::fmt::Debug for RawStream {
     }
 }
 
-impl RawStream {
-    pub fn to_list_item(self) -> Option<(ListItem<'static>, HttpStream)> {
+impl TryFrom<RawStream> for HttpStream {
+    type Error = &'static str;
+
+    fn try_from(raw: RawStream) -> Result<Self, Self::Error> {
         // Parse request
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parsed_req = httparse::Request::new(&mut headers);
-        let res = parsed_req.parse(self.request.as_slice()).unwrap();
+        let res = parsed_req.parse(raw.request.as_slice()).unwrap();
 
         if res.is_partial() {
-            return None;
-            //panic!("Request is partial {:?}", parsed_req);
+            return Err("Partial Request");
         }
 
         let mut req = Req {
@@ -79,9 +93,9 @@ impl RawStream {
 
         let body_start = res.unwrap();
 
-        if body_start < self.request.len() {
+        if body_start < raw.request.len() {
             req.body = Some(
-                String::from_utf8(self.request[body_start..].to_vec())
+                String::from_utf8(raw.request[body_start..].to_vec())
                     .unwrap_or("Encoding error".to_string()),
             );
         }
@@ -89,11 +103,10 @@ impl RawStream {
         // Parse response
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parsed_resp = httparse::Response::new(&mut headers);
-        let res = parsed_resp.parse(self.response.as_slice()).unwrap();
+        let res = parsed_resp.parse(raw.response.as_slice()).unwrap();
 
         if res.is_partial() {
-            return None;
-            //panic!("Request is partial {:?}", parsed_req);
+            return Err("Partial Response");
         }
 
         let mut resp = Resp {
@@ -111,15 +124,11 @@ impl RawStream {
             );
         }
 
-        //if !self.filter_stream(&req, &resp) {
-        //    return;
-        //}
-
         let body_start = res.unwrap();
 
-        if body_start < self.response.len() {
+        if body_start < raw.response.len() {
             resp.body = Some(
-                String::from_utf8(self.response[body_start..].to_vec())
+                String::from_utf8(raw.response[body_start..].to_vec())
                     .unwrap_or("Encoding error".to_string()),
             );
         }
@@ -134,18 +143,32 @@ impl RawStream {
             Some(ref b) => b.len(),
         };
 
-        let item = ListItem::new(format!(
-            "{} {} {} ({} b / {} b)",
-            req.version, req.method, req.path, req_len, resp_len
-        ));
-
         let stream = HttpStream {
-            raw_stream: self,
+            id: raw.id,
             parsed_request: req,
             parsed_response: resp,
+            timestamp: raw.ts,
+            source_addr: raw.source_addr,
+            source_port: raw.source_port,
+            dest_addr: raw.dest_addr,
+            dest_port: raw.dest_port,
         };
 
-        Some((item, stream))
+        Ok(stream)
+    }
+}
+
+impl From<HttpStream> for Row<'_> {
+    fn from(value: HttpStream) -> Self {
+        Row::new(vec![
+            format!("{:10}", value.timestamp),
+            format!("{}:{}", value.source_addr, value.source_port),
+            format!("{}:{}", value.dest_addr, value.dest_port),
+            format!(
+                "{} {}",
+                value.parsed_request.method, value.parsed_request.path
+            ),
+        ])
     }
 }
 

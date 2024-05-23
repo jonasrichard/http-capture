@@ -44,10 +44,10 @@ impl Streams {
         None
     }
 
-    fn store(&mut self, source: Endpoint, dest: Endpoint) -> (usize, EndpointSide) {
+    fn store(&mut self, source: Endpoint, dest: Endpoint, ts: i64) -> (usize, EndpointSide) {
         match self.lookup_stream(&source, &dest) {
             None => {
-                let stream = TcpStream::new(self.next_id, source, dest);
+                let stream = TcpStream::new(self.next_id, ts, source, dest);
 
                 self.streams.push(stream);
                 self.next_id += 1;
@@ -122,6 +122,7 @@ pub fn start_capture(
 }
 
 struct FilteredStream {
+    ts: i64,
     src: Endpoint,
     dest: Endpoint,
     payload: Vec<u8>,
@@ -160,12 +161,15 @@ fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredS
         while let Ok(packet) = cap.next_packet() {
             //hexdump(&packet.data);
 
+            let ts = packet.header.ts.tv_sec;
+
             if loopback {
                 let (ip4, tcp, payload) = from_loopback_packet(packet.data);
                 let tcp_fin = tcp.fin;
 
                 if let Some((source, dest)) = TcpStream::extract_endpoint_pair(ip4, tcp) {
                     let filtered_stream = FilteredStream {
+                        ts,
                         src: source,
                         dest,
                         payload: payload.to_vec(),
@@ -188,6 +192,7 @@ fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredS
 
                     if let Some(etherparse::TransportSlice::Tcp(tcp)) = packet.transport {
                         let filtered_stream = FilteredStream {
+                            ts,
                             src: source,
                             dest,
                             payload: tcp.payload().to_vec(),
@@ -252,7 +257,7 @@ fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: 
 
                 info!("Packet {packet:?}");
 
-                let (index, side) = streams.store(packet.src, packet.dest);
+                let (index, side) = streams.store(packet.src, packet.dest, packet.ts);
 
                 match side {
                     EndpointSide::Source => streams.append_request_bytes(index, packet.payload.as_slice()),
