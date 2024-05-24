@@ -189,8 +189,6 @@ fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredS
             } else {
                 let packet = SlicedPacket::from_ethernet(packet.data).unwrap();
 
-                info!("Stream {packet:?}");
-
                 if let Some((source, dest)) = TcpStream::from_sliced_packet(&packet) {
                     // TODO implement filtering here
 
@@ -257,9 +255,13 @@ fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: 
     loop {
         select! {
             recv(packets) -> packet => {
-                let packet = packet.unwrap();
+                if packet.is_err() {
+                    error!("Error during capture loop: {:?}", packet);
 
-                info!("Packet {packet:?}");
+                    continue;
+                }
+
+                let packet = packet.unwrap();
 
                 let (index, side) = streams.store(packet.src, packet.dest, packet.ts);
 

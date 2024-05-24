@@ -1,7 +1,7 @@
 use std::{collections::HashMap, net::IpAddr};
 
 use ratatui::{
-    style::{Color, Modifier, Style, Styled},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::Row,
 };
@@ -68,16 +68,15 @@ impl std::fmt::Debug for RawStream {
 }
 
 impl TryFrom<RawStream> for HttpStream {
-    type Error = &'static str;
+    type Error = Box<dyn std::error::Error>;
 
     fn try_from(raw: RawStream) -> Result<Self, Self::Error> {
         // Parse request
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parsed_req = httparse::Request::new(&mut headers);
-        let res = parsed_req.parse(raw.request.as_slice()).unwrap();
-
+        let res = parsed_req.parse(raw.request.as_slice())?;
         if res.is_partial() {
-            return Err("Partial Request");
+            return Err("Partial request".into());
         }
 
         let mut req = Req {
@@ -110,7 +109,7 @@ impl TryFrom<RawStream> for HttpStream {
         let res = parsed_resp.parse(raw.response.as_slice()).unwrap();
 
         if res.is_partial() {
-            return Err("Partial Response");
+            return Err("Partial response".into());
         }
 
         let mut resp = Resp {
@@ -124,7 +123,7 @@ impl TryFrom<RawStream> for HttpStream {
         for header in parsed_resp.headers {
             resp.headers.insert(
                 header.name.to_string(),
-                String::from_utf8(header.value.to_vec()).unwrap(),
+                String::from_utf8(header.value.to_vec())?,
             );
         }
 
