@@ -25,7 +25,6 @@ struct FileLog {
 // TODO:
 //  - break long lines in http info window
 //  - add sequence number to stream list
-//  - support gzip response bodies
 //  - pretty print query string
 //  - dump request-response to text file
 

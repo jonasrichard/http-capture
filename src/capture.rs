@@ -27,7 +27,9 @@ impl Streams {
         }
     }
 
-    // TODO pass and endpoint pair rather?
+    /// Lookup the conversation identified by the source and dest endpoints and
+    /// return the index in the streams Vec.
+    /// If this is a new conversation, it returns None.
     fn lookup_stream(&self, source: &Endpoint, dest: &Endpoint) -> Option<(usize, EndpointSide)> {
         for (i, stream) in self.streams.iter().enumerate() {
             match stream.same_parties(source, dest) {
@@ -44,6 +46,7 @@ impl Streams {
         None
     }
 
+    /// Stores a new stream in the streams vector.
     fn store(&mut self, source: Endpoint, dest: Endpoint, ts: i64) -> (usize, EndpointSide) {
         match self.lookup_stream(&source, &dest) {
             None => {

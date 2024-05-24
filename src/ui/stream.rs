@@ -1,5 +1,6 @@
-use std::{collections::HashMap, net::IpAddr};
+use std::{collections::HashMap, io::Read, net::IpAddr};
 
+use flate2::read::MultiGzDecoder;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
@@ -130,10 +131,18 @@ impl TryFrom<RawStream> for HttpStream {
         let body_start = res.unwrap();
 
         if body_start < raw.response.len() {
-            resp.body = Some(
-                String::from_utf8(raw.response[body_start..].to_vec())
-                    .unwrap_or("Encoding error".to_string()),
-            );
+            if let Some(enc) = resp.headers.get("Content-Encoding") {
+                if enc == "gzip" {
+                    resp.body = Some(unzip_content(&raw.response[body_start..])?);
+                } else {
+                    return Err(format!("Unknown encoding {enc}").into());
+                }
+            } else {
+                resp.body = Some(
+                    String::from_utf8(raw.response[body_start..].to_vec())
+                        .unwrap_or("Encoding error".to_string()),
+                );
+            }
         }
 
         let req_len = match req.body {
@@ -222,4 +231,13 @@ impl HttpStream {
             text.extend(Text::raw(body.clone()));
         }
     }
+}
+
+fn unzip_content(buf: &[u8]) -> Result<String, std::io::Error> {
+    let mut gz = MultiGzDecoder::new(buf);
+    let mut s = String::new();
+
+    gz.read_to_string(&mut s)?;
+
+    Ok(s)
 }
