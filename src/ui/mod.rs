@@ -23,7 +23,7 @@ use ratatui::{
     },
     Frame, Terminal,
 };
-use std::{error::Error, thread};
+use std::{error::Error, fs::File, io::BufWriter, thread};
 
 use crate::capture_control::Command;
 
@@ -63,6 +63,7 @@ pub struct State {
     devices: Vec<ListItem<'static>>,
     device_names: Vec<String>,
     selected_device: ListState,
+    status_line: String,
 }
 
 impl State {
@@ -81,6 +82,7 @@ impl State {
             devices,
             device_names,
             selected_device: ListState::default(),
+            status_line: String::from(""),
         }
     }
 
@@ -106,6 +108,7 @@ impl State {
                     if self.capture_state == CaptureState::Active {
                         self.set_capture_state(CaptureState::Inactive);
                         self.commands.send(Command::StopCapture).unwrap();
+                        self.status_line = String::from("Stop capturing");
                     }
                 }
                 KeyCode::Char('h') => {
@@ -135,6 +138,10 @@ impl State {
             KeyCode::Down => {
                 table_move_down(&mut self.selected_stream, self.stream_items.len());
                 self.reset_scroll();
+            }
+            KeyCode::Char('p') => {
+                self.save_http_stream("http-stream.txt");
+                self.status_line = format!("HTTP stream saved").to_string();
             }
             KeyCode::Tab => self.set_selected_window(SelectedWindow::PacketDetails),
             KeyCode::Char('q') => {
@@ -174,6 +181,7 @@ impl State {
                     self.commands
                         .send(Command::StartCapture(dev.to_string()))
                         .unwrap();
+                    self.status_line = format!("Start capturing on device {}", dev);
                 }
             }
             _ => (),
@@ -183,11 +191,19 @@ impl State {
     fn draw_ui(&mut self, f: &mut Frame) {
         let parent_chunk = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+                Constraint::Length(1),
+            ])
             .split(f.size());
 
         self.stream_list_draw_ui(f, parent_chunk[0]);
         self.stream_info_draw_ui(f, parent_chunk[1]);
+
+        let status = Paragraph::new(Text::styled(self.status_line.clone(), Color::White));
+
+        f.render_widget(status, parent_chunk[2]);
 
         match self.selected_window {
             SelectedWindow::Help => help(f),
@@ -341,6 +357,17 @@ impl State {
         if let Ok(http_stream) = HttpStream::try_from(stream) {
             self.stream_items.push(http_stream.clone().into());
             self.streams.push(http_stream);
+        }
+    }
+
+    pub fn save_http_stream(&mut self, file_name: &str) {
+        let f = File::create(file_name).unwrap();
+        let writer = BufWriter::new(f);
+
+        if let Some(selected) = &self.selected_stream.selected() {
+            if let Some(selected_stream) = self.streams.get(*selected) {
+                selected_stream.write_to_file(writer);
+            }
         }
     }
 

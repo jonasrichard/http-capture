@@ -1,4 +1,9 @@
-use std::{collections::HashMap, io::Read, net::IpAddr};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{Read, Write},
+    net::IpAddr,
+};
 
 use flate2::read::MultiGzDecoder;
 use ratatui::{
@@ -230,6 +235,44 @@ impl HttpStream {
         if let Some(ref body) = resp.body {
             text.extend(Text::raw(body.clone()));
         }
+    }
+
+    pub fn write_to_file(
+        &self,
+        mut writer: std::io::BufWriter<File>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let req = &self.parsed_request;
+
+        writer.write_fmt(format_args!(
+            "HTTP 1.{} {} {}\n",
+            req.version, req.method, req.path
+        ))?;
+
+        for header in &req.headers {
+            writer.write_fmt(format_args!("{}: {}\n", header.0, header.1))?;
+        }
+
+        writer.write("\n".as_bytes())?;
+
+        if let Some(ref body) = req.body {
+            writer.write(body.as_bytes())?;
+        }
+
+        let resp = &self.parsed_response;
+
+        writer.write_fmt(format_args!("{}\n", resp.code))?;
+
+        for header in &resp.headers {
+            writer.write_fmt(format_args!("{}: {}\n", header.0, header.1))?;
+        }
+
+        writer.write("\n".as_bytes())?;
+
+        if let Some(ref body) = resp.body {
+            writer.write(body.as_bytes())?;
+        }
+
+        Ok(())
     }
 }
 
