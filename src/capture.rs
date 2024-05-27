@@ -5,10 +5,16 @@ use crossbeam::{
 use etherparse::{Ipv4Header, SlicedPacket, TcpHeader};
 use log::{error, info};
 use pcap::{Active, Capture, Device};
-use std::thread::{self, JoinHandle};
+use std::{
+    fs::File,
+    io::BufWriter,
+    thread::{self, JoinHandle},
+};
 
-use crate::stream::{Endpoint, EndpointSide, TcpStream};
-use crate::ui::stream::RawStream;
+use crate::{
+    stream::{Endpoint, EndpointSide, TcpStream},
+    ui::stream::HttpStream,
+};
 
 /// The stream storage where streams stored as a single vector and when
 /// a new endpoint pair comes we can say if there is already a living
@@ -92,10 +98,10 @@ impl Streams {
         }
     }
 
-    fn send_stream(&mut self, index: usize) -> RawStream {
+    fn send_stream(&mut self, index: usize) -> HttpStream {
         let stream = self.streams.remove(index);
 
-        stream.convert_to_raw_stream()
+        stream.convert_to_http_stream()
     }
 }
 
@@ -106,7 +112,7 @@ pub enum Command {
 pub fn start_capture(
     interface: String,
     port: u16,
-    output: Sender<RawStream>,
+    output: Sender<HttpStream>,
     commands: Receiver<Command>,
 ) -> JoinHandle<()> {
     let mut devices = Device::list().unwrap();
@@ -155,7 +161,8 @@ fn from_loopback_packet(data: &[u8]) -> (Ipv4Header, TcpHeader, &[u8]) {
 
         (ip4_header, transport_header, rest)
     } else {
-        panic!("Unknown sequence {}", data[0]);
+        error!("Unknown sequence {}", data[0]);
+        panic!("Cannot parse bytes");
     }
 }
 
@@ -166,7 +173,7 @@ fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredS
 
     thread::spawn(move || {
         while let Ok(packet) = cap.next_packet() {
-            //hexdump(&packet.data);
+            hexdump(packet.data);
 
             let ts = packet.header.ts.tv_sec;
 
@@ -213,6 +220,8 @@ fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredS
                 }
             }
         }
+
+        info!("Packet stream is being closed");
     });
 
     rx
@@ -228,7 +237,12 @@ fn is_loopback(_: &Device) -> bool {
     false
 }
 
-fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: Receiver<Command>) {
+fn capture_loop(
+    device: Device,
+    port: u16,
+    output: Sender<HttpStream>,
+    commands: Receiver<Command>,
+) {
     // Loopback packets are parsed somehow else
     let loopback = is_loopback(&device);
 
@@ -261,7 +275,7 @@ fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: 
                 if packet.is_err() {
                     error!("Error during capture loop: {:?}", packet);
 
-                    continue;
+                    return;
                 }
 
                 let packet = packet.unwrap();
@@ -304,11 +318,16 @@ fn capture_loop(device: Device, port: u16, output: Sender<RawStream>, commands: 
 
 #[allow(dead_code)]
 fn hexdump(data: &[u8]) {
+    use std::io::Write;
+
+    let f = File::create("packet-hexdump.txt").unwrap();
+    let mut writer = BufWriter::new(f);
+
     for ch in data.chunks(16) {
         let mut line = String::from("");
 
         for c in ch {
-            print!("{:02X} ", c);
+            writer.write_all(format!("{:02X} ", c).as_bytes()).unwrap();
 
             if *c > 31 && *c < 128 {
                 line.push(char::from_u32(*c as u32).unwrap_or('.'));
@@ -317,8 +336,10 @@ fn hexdump(data: &[u8]) {
             }
         }
 
-        println!("|{}|", line);
+        writer
+            .write_all(format!("|{}|\n", line).as_bytes())
+            .unwrap();
     }
 
-    println!();
+    writer.write_all("\n".as_bytes()).unwrap();
 }

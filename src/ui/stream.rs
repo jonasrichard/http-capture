@@ -12,22 +12,6 @@ use ratatui::{
     widgets::Row,
 };
 
-/// RawStream is a set of packets collected by the capture module.
-///
-/// The packets here belong to the same conversation and the request
-/// and the response are already normalized as byte arrays.
-pub struct RawStream {
-    pub id: usize,
-    pub ts: i64,
-    pub source_addr: IpAddr,
-    pub source_port: u16,
-    pub dest_addr: IpAddr,
-    pub dest_port: u16,
-    pub request: Vec<u8>,
-    pub response: Vec<u8>,
-}
-
-#[derive(Clone)]
 pub struct HttpStream {
     pub id: usize,
     pub timestamp: i64,
@@ -35,11 +19,12 @@ pub struct HttpStream {
     pub source_port: u16,
     pub dest_addr: IpAddr,
     pub dest_port: u16,
-    pub parsed_request: Req,
-    pub parsed_response: Resp,
+    pub request: Vec<u8>,
+    pub response: Vec<u8>,
+    pub parsed_request: Option<Req>,
+    pub parsed_response: Option<Resp>,
 }
 
-#[derive(Clone)]
 pub struct Req {
     pub method: String,
     pub path: String,
@@ -48,7 +33,6 @@ pub struct Req {
     pub body: Option<String>,
 }
 
-#[derive(Clone)]
 pub struct Resp {
     pub version: String,
     pub code: u16,
@@ -57,12 +41,12 @@ pub struct Resp {
     pub body: Option<String>,
 }
 
-impl std::fmt::Debug for RawStream {
+impl std::fmt::Debug for HttpStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let to = std::cmp::min(self.response.len(), 64);
         let resp = String::from_utf8_lossy(&self.response[0..to]).to_string();
 
-        f.debug_struct("RawStream")
+        f.debug_struct("HttpStream")
             .field("id", &self.id)
             .field(
                 "request",
@@ -73,14 +57,12 @@ impl std::fmt::Debug for RawStream {
     }
 }
 
-impl TryFrom<RawStream> for HttpStream {
-    type Error = Box<dyn std::error::Error>;
-
-    fn try_from(raw: RawStream) -> Result<Self, Self::Error> {
-        // Parse request
+impl HttpStream {
+    pub fn parse_request(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parsed_req = httparse::Request::new(&mut headers);
-        let res = parsed_req.parse(raw.request.as_slice())?;
+        let res = parsed_req.parse(self.request.as_slice())?;
+
         if res.is_partial() {
             return Err("Partial request".into());
         }
@@ -102,17 +84,22 @@ impl TryFrom<RawStream> for HttpStream {
 
         let body_start = res.unwrap();
 
-        if body_start < raw.request.len() {
+        if body_start < self.request.len() {
             req.body = Some(
-                String::from_utf8(raw.request[body_start..].to_vec())
+                String::from_utf8(self.request[body_start..].to_vec())
                     .unwrap_or("Encoding error".to_string()),
             );
         }
 
-        // Parse response
+        self.parsed_request = Some(req);
+
+        Ok(())
+    }
+
+    pub fn parse_response(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parsed_resp = httparse::Response::new(&mut headers);
-        let res = parsed_resp.parse(raw.response.as_slice()).unwrap();
+        let res = parsed_resp.parse(self.response.as_slice()).unwrap();
 
         if res.is_partial() {
             return Err("Partial response".into());
@@ -135,105 +122,85 @@ impl TryFrom<RawStream> for HttpStream {
 
         let body_start = res.unwrap();
 
-        if body_start < raw.response.len() {
+        if body_start < self.response.len() {
             if let Some(enc) = resp.headers.get("Content-Encoding") {
                 if enc == "gzip" {
-                    resp.body = Some(unzip_content(&raw.response[body_start..])?);
+                    resp.body = Some(unzip_content(&self.response[body_start..])?);
                 } else {
                     return Err(format!("Unknown encoding {enc}").into());
                 }
             } else {
                 resp.body = Some(
-                    String::from_utf8(raw.response[body_start..].to_vec())
+                    String::from_utf8(self.response[body_start..].to_vec())
                         .unwrap_or("Encoding error".to_string()),
                 );
             }
         }
 
-        let req_len = match req.body {
-            None => 0,
-            Some(ref b) => b.len(),
-        };
+        self.parsed_response = Some(resp);
 
-        let resp_len = match resp.body {
-            None => 0,
-            Some(ref b) => b.len(),
-        };
-
-        let stream = HttpStream {
-            id: raw.id,
-            parsed_request: req,
-            parsed_response: resp,
-            timestamp: raw.ts,
-            source_addr: raw.source_addr,
-            source_port: raw.source_port,
-            dest_addr: raw.dest_addr,
-            dest_port: raw.dest_port,
-        };
-
-        Ok(stream)
+        Ok(())
     }
 }
 
-impl From<HttpStream> for Row<'_> {
-    fn from(value: HttpStream) -> Self {
+impl From<&HttpStream> for Row<'_> {
+    fn from(value: &HttpStream) -> Self {
         Row::new(vec![
             format!("{:10}", value.timestamp),
             format!("{}:{}", value.source_addr, value.source_port),
             format!("{}:{}", value.dest_addr, value.dest_port),
-            format!(
-                "{} {}",
-                value.parsed_request.method, value.parsed_request.path
-            ),
+            match value.parsed_request {
+                None => "Cannot parse request".to_string(),
+                Some(ref pr) => format!("{} {}", pr.method, pr.path),
+            },
         ])
     }
 }
 
 impl HttpStream {
     pub fn write_to_text(&self, text: &mut Text) {
-        let pr = &self.parsed_request;
-
         let green = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
-
-        text.push_line(Line::styled(format!("{} {}\n", pr.method, pr.path), green));
-
         let red = Style::new().fg(Color::LightRed);
 
-        for header in &pr.headers {
-            let mut line = Line::styled(format!("{}:", header.0), red);
+        if let Some(ref pr) = self.parsed_request {
+            text.push_line(Line::styled(format!("{} {}\n", pr.method, pr.path), green));
 
-            line.push_span(Span::styled(format!(" {}\n", header.1), Color::Gray));
+            for header in &pr.headers {
+                let mut line = Line::styled(format!("{}:", header.0), red);
 
-            text.push_line(line);
+                line.push_span(Span::styled(format!(" {}\n", header.1), Color::Gray));
+
+                text.push_line(line);
+            }
+
+            text.extend(Text::raw("\n"));
+
+            if let Some(ref body) = pr.body {
+                text.extend(Text::raw(body.clone()));
+            }
+
+            text.extend(Text::raw("\n"));
         }
 
-        text.extend(Text::raw("\n"));
+        if let Some(ref resp) = self.parsed_response {
+            text.push_line(Line::styled(
+                format!("{} {}", resp.code, resp.version),
+                green,
+            ));
 
-        if let Some(ref body) = pr.body {
-            text.extend(Text::raw(body.clone()));
-        }
+            for header in &resp.headers {
+                let mut line = Line::styled(format!("{}:", header.0), red);
 
-        text.extend(Text::raw("\n"));
+                line.push_span(Span::styled(format!(" {}\n", header.1), Color::Gray));
 
-        let resp = &self.parsed_response;
+                text.push_line(line);
+            }
 
-        text.push_line(Line::styled(
-            format!("{} {}", resp.code, resp.version),
-            green,
-        ));
+            text.extend(Text::raw("\n"));
 
-        for header in &resp.headers {
-            let mut line = Line::styled(format!("{}:", header.0), red);
-
-            line.push_span(Span::styled(format!(" {}\n", header.1), Color::Gray));
-
-            text.push_line(line);
-        }
-
-        text.extend(Text::raw("\n"));
-
-        if let Some(ref body) = resp.body {
-            text.extend(Text::raw(body.clone()));
+            if let Some(ref body) = resp.body {
+                text.extend(Text::raw(body.clone()));
+            }
         }
     }
 
@@ -241,35 +208,35 @@ impl HttpStream {
         &self,
         mut writer: std::io::BufWriter<File>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let req = &self.parsed_request;
+        if let Some(ref req) = self.parsed_request {
+            writer.write_fmt(format_args!(
+                "HTTP 1.{} {} {}\n",
+                req.version, req.method, req.path
+            ))?;
 
-        writer.write_fmt(format_args!(
-            "HTTP 1.{} {} {}\n",
-            req.version, req.method, req.path
-        ))?;
+            for header in &req.headers {
+                writer.write_fmt(format_args!("{}: {}\n", header.0, header.1))?;
+            }
 
-        for header in &req.headers {
-            writer.write_fmt(format_args!("{}: {}\n", header.0, header.1))?;
+            writer.write("\n".as_bytes())?;
+
+            if let Some(ref body) = req.body {
+                writer.write(body.as_bytes())?;
+            }
         }
 
-        writer.write("\n".as_bytes())?;
+        if let Some(ref resp) = self.parsed_response {
+            writer.write_fmt(format_args!("{}\n", resp.code))?;
 
-        if let Some(ref body) = req.body {
-            writer.write(body.as_bytes())?;
-        }
+            for header in &resp.headers {
+                writer.write_fmt(format_args!("{}: {}\n", header.0, header.1))?;
+            }
 
-        let resp = &self.parsed_response;
+            writer.write("\n".as_bytes())?;
 
-        writer.write_fmt(format_args!("{}\n", resp.code))?;
-
-        for header in &resp.headers {
-            writer.write_fmt(format_args!("{}: {}\n", header.0, header.1))?;
-        }
-
-        writer.write("\n".as_bytes())?;
-
-        if let Some(ref body) = resp.body {
-            writer.write(body.as_bytes())?;
+            if let Some(ref body) = resp.body {
+                writer.write(body.as_bytes())?;
+            }
         }
 
         Ok(())

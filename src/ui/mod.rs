@@ -27,7 +27,7 @@ use std::{error::Error, fs::File, io::BufWriter, thread};
 
 use crate::capture_control::Command;
 
-use self::stream::{HttpStream, RawStream};
+use self::stream::HttpStream;
 
 const HELP: &str = r#"
 C:        Start capture
@@ -52,7 +52,7 @@ pub enum SelectedWindow {
 }
 
 pub struct State {
-    input: Receiver<RawStream>,
+    input: Receiver<HttpStream>,
     commands: Sender<Command>,
     capture_state: CaptureState,
     selected_window: SelectedWindow,
@@ -67,7 +67,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(input: Receiver<RawStream>, cmd: Sender<Command>) -> State {
+    pub fn new(input: Receiver<HttpStream>, cmd: Sender<Command>) -> State {
         let (devices, device_names) = device_list();
 
         State {
@@ -141,7 +141,7 @@ impl State {
             }
             KeyCode::Char('p') => {
                 self.save_http_stream("http-stream.txt");
-                self.status_line = format!("HTTP stream saved").to_string();
+                self.status_line = "HTTP stream saved".to_string();
             }
             KeyCode::Tab => self.set_selected_window(SelectedWindow::PacketDetails),
             KeyCode::Char('q') => {
@@ -353,11 +353,23 @@ impl State {
     }
 
     /// Add a new RawStream to the UI and convert it to a HttpStream.
-    pub fn add_stream(&mut self, stream: RawStream) {
-        if let Ok(http_stream) = HttpStream::try_from(stream) {
-            self.stream_items.push(http_stream.clone().into());
-            self.streams.push(http_stream);
+    pub fn add_stream(&mut self, mut stream: HttpStream) {
+        let mut message = String::from("");
+
+        if let Err(e) = stream.parse_request() {
+            error!("Error parsing request: {}", e);
+
+            message.push_str(&format!("request: {}", e));
         }
+
+        if let Err(e) = stream.parse_response() {
+            error!("Error parsing response: {}", e);
+
+            message.push_str(&format!("response: {}", e));
+        }
+
+        self.stream_items.push((&stream).into());
+        self.streams.push(stream);
     }
 
     pub fn save_http_stream(&mut self, file_name: &str) {
@@ -366,7 +378,9 @@ impl State {
 
         if let Some(selected) = &self.selected_stream.selected() {
             if let Some(selected_stream) = self.streams.get(*selected) {
-                selected_stream.write_to_file(writer);
+                if let Err(e) = selected_stream.write_to_file(writer) {
+                    self.status_line = format!("Error saving stream: {}", e);
+                }
             }
         }
     }

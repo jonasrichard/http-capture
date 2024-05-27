@@ -4,7 +4,7 @@ use std::net::IpAddr;
 
 use etherparse::{Ipv4Header, SlicedPacket, TcpHeader};
 
-use crate::ui::stream::RawStream;
+use crate::ui::stream::HttpStream;
 
 /// Identifies an endpoint.
 #[derive(Debug, PartialEq)]
@@ -74,16 +74,18 @@ impl TcpStream {
         self.fin == (true, true)
     }
 
-    pub fn convert_to_raw_stream(self) -> RawStream {
-        RawStream {
+    pub fn convert_to_http_stream(self) -> HttpStream {
+        HttpStream {
             id: self.id,
-            ts: self.timestamp,
+            timestamp: self.timestamp,
             source_addr: self.source.endpoint.address,
             source_port: self.source.endpoint.port,
             dest_addr: self.destination.endpoint.address,
             dest_port: self.destination.endpoint.port,
             request: self.request,
             response: self.response,
+            parsed_request: None,
+            parsed_response: None,
         }
     }
 
