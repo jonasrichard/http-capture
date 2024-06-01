@@ -218,10 +218,10 @@ impl HttpStream {
                 writer.write_fmt(format_args!("{}: {}\n", header.0, header.1))?;
             }
 
-            writer.write("\n".as_bytes())?;
+            writer.write_all("\n".as_bytes())?;
 
             if let Some(ref body) = req.body {
-                writer.write(body.as_bytes())?;
+                writer.write_all(body.as_bytes())?;
             }
         }
 
@@ -232,10 +232,10 @@ impl HttpStream {
                 writer.write_fmt(format_args!("{}: {}\n", header.0, header.1))?;
             }
 
-            writer.write("\n".as_bytes())?;
+            writer.write_all("\n".as_bytes())?;
 
             if let Some(ref body) = resp.body {
-                writer.write(body.as_bytes())?;
+                writer.write_all(body.as_bytes())?;
             }
         }
 
