@@ -98,7 +98,7 @@ impl Streams {
         }
     }
 
-    fn send_stream(&mut self, index: usize) -> HttpStream {
+    fn send_stream(&mut self, index: usize) -> Vec<HttpStream> {
         let stream = self.streams.remove(index);
 
         stream.convert_to_http_stream()
@@ -291,12 +291,14 @@ fn capture_loop(
                 // that. And also send to the stream.
                 // Rename struct, a lot of has name stream.
                 if packet.fin && streams.register_fin(index, side) {
-                    let stream = streams.send_stream(index);
+                    let stream_list = streams.send_stream(index);
 
                     //println!("{:?}", streams);
 
-                    if let Err(e) = output.send(stream) {
-                        error!("Error {e:?}");
+                    for stream in stream_list {
+                        if let Err(e) = output.send(stream) {
+                            error!("Error {e:?}");
+                        }
                     }
                 }
             }

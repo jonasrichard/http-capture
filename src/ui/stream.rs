@@ -1,11 +1,5 @@
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::{Read, Write},
-    net::IpAddr,
-};
+use std::{collections::HashMap, fs::File, io::Write, net::IpAddr};
 
-use flate2::read::MultiGzDecoder;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
@@ -19,8 +13,6 @@ pub struct HttpStream {
     pub source_port: u16,
     pub dest_addr: IpAddr,
     pub dest_port: u16,
-    pub request: Vec<u8>,
-    pub response: Vec<u8>,
     pub parsed_request: Option<Req>,
     pub parsed_response: Option<Resp>,
 }
@@ -43,103 +35,13 @@ pub struct Resp {
 
 impl std::fmt::Debug for HttpStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let to = std::cmp::min(self.response.len(), 64);
-        let resp = String::from_utf8_lossy(&self.response[0..to]).to_string();
-
         f.debug_struct("HttpStream")
             .field("id", &self.id)
-            .field(
-                "request",
-                &String::from_utf8(self.request.clone()).unwrap_or("Non UTF-8 data".to_string()),
-            )
-            .field("response", &resp)
+            .field("source_addr", &self.source_addr)
+            .field("source_port", &self.source_port)
+            .field("dest_addr", &self.dest_addr)
+            .field("dest_port", &self.dest_port)
             .finish()
-    }
-}
-
-impl HttpStream {
-    pub fn parse_request(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut headers = [httparse::EMPTY_HEADER; 16];
-        let mut parsed_req = httparse::Request::new(&mut headers);
-        let res = parsed_req.parse(self.request.as_slice())?;
-
-        if res.is_partial() {
-            return Err("Partial request".into());
-        }
-
-        let mut req = Req {
-            method: parsed_req.method.unwrap().to_string(),
-            path: parsed_req.path.unwrap().to_string(),
-            version: parsed_req.version.unwrap().to_string(),
-            headers: HashMap::new(),
-            body: None,
-        };
-
-        for header in parsed_req.headers {
-            req.headers.insert(
-                header.name.to_string(),
-                String::from_utf8(header.value.to_vec()).unwrap(),
-            );
-        }
-
-        let body_start = res.unwrap();
-
-        if body_start < self.request.len() {
-            req.body = Some(
-                String::from_utf8(self.request[body_start..].to_vec())
-                    .unwrap_or("Encoding error".to_string()),
-            );
-        }
-
-        self.parsed_request = Some(req);
-
-        Ok(())
-    }
-
-    pub fn parse_response(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut headers = [httparse::EMPTY_HEADER; 16];
-        let mut parsed_resp = httparse::Response::new(&mut headers);
-        let res = parsed_resp.parse(self.response.as_slice()).unwrap();
-
-        if res.is_partial() {
-            return Err("Partial response".into());
-        }
-
-        let mut resp = Resp {
-            version: parsed_resp.version.unwrap().to_string(),
-            code: parsed_resp.code.unwrap(),
-            reason: parsed_resp.reason.map(|r| r.to_string()),
-            headers: HashMap::new(),
-            body: None,
-        };
-
-        for header in parsed_resp.headers {
-            resp.headers.insert(
-                header.name.to_string(),
-                String::from_utf8(header.value.to_vec())?,
-            );
-        }
-
-        let body_start = res.unwrap();
-
-        if body_start < self.response.len() {
-            if let Some(enc) = resp.headers.get("Content-Encoding") {
-                if enc == "gzip" {
-                    resp.body = Some(unzip_content(&self.response[body_start..])?);
-                } else {
-                    return Err(format!("Unknown encoding {enc}").into());
-                }
-            } else {
-                resp.body = Some(
-                    String::from_utf8(self.response[body_start..].to_vec())
-                        .unwrap_or("Encoding error".to_string()),
-                );
-            }
-        }
-
-        self.parsed_response = Some(resp);
-
-        Ok(())
     }
 }
 
@@ -241,13 +143,4 @@ impl HttpStream {
 
         Ok(())
     }
-}
-
-fn unzip_content(buf: &[u8]) -> Result<String, std::io::Error> {
-    let mut gz = MultiGzDecoder::new(buf);
-    let mut s = String::new();
-
-    gz.read_to_string(&mut s)?;
-
-    Ok(s)
 }

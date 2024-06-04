@@ -353,21 +353,7 @@ impl State {
     }
 
     /// Add a new RawStream to the UI and convert it to a HttpStream.
-    pub fn add_stream(&mut self, mut stream: HttpStream) {
-        let mut message = String::from("");
-
-        if let Err(e) = stream.parse_request() {
-            error!("Error parsing request: {}", e);
-
-            message.push_str(&format!("request: {}", e));
-        }
-
-        if let Err(e) = stream.parse_response() {
-            error!("Error parsing response: {}", e);
-
-            message.push_str(&format!("response: {}", e));
-        }
-
+    pub fn add_stream(&mut self, stream: HttpStream) {
         self.stream_items.push((&stream).into());
         self.streams.push(stream);
     }
