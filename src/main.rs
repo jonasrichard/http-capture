@@ -71,13 +71,17 @@ impl Log for FileLog {
         if self.enabled(record.metadata()) {
             let mut f = self.file.lock().unwrap();
 
+            let loc = match (record.file(), record.line()) {
+                (Some(file), Some(line)) => format!("{}:{}", file, line),
+                _ => String::from(""),
+            };
+
             writeln!(
                 f,
-                "{} - {} - {:?}:{:?} - {}",
+                "{} - {} - {} - {}",
                 Local::now().format("%Y-%m-%d %H:%M:%S"),
                 record.level(),
-                record.file(),
-                record.line(),
+                loc,
                 record.args()
             )
             .unwrap();

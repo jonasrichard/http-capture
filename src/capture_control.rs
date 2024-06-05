@@ -30,8 +30,11 @@ pub fn control_loop(cmd: Receiver<Command>, output: Sender<HttpStream>) {
 
 pub fn start_capture(interface: String, packet_tx: Sender<HttpStream>) -> Sender<capture::Command> {
     let (command_tx, command_rx) = channel::bounded(5);
+    let port = 80;
 
-    capture::start_capture(interface, 80, packet_tx, command_rx);
+    info!("Capturing on port {}", port);
+
+    capture::start_capture(interface, port, packet_tx, command_rx);
 
     command_tx
 }

@@ -169,11 +169,12 @@ fn from_loopback_packet(data: &[u8]) -> (Ipv4Header, TcpHeader, &[u8]) {
 fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredStream> {
     let (tx, rx) = channel::bounded(5);
 
-    info!("Starting packet stream");
-
     thread::spawn(move || {
+        info!("Start to stream packets");
+
         while let Ok(packet) = cap.next_packet() {
-            hexdump(packet.data);
+            //hexdump(packet.data);
+            info!("Packet {:?}", packet.header);
 
             let ts = packet.header.ts.tv_sec;
 
