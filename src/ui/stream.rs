@@ -48,6 +48,7 @@ impl std::fmt::Debug for HttpStream {
 impl From<&HttpStream> for Row<'_> {
     fn from(value: &HttpStream) -> Self {
         Row::new(vec![
+            format!("{:5}", value.id),
             format!("{:10}", value.timestamp),
             format!("{}:{}", value.source_addr, value.source_port),
             format!("{}:{}", value.dest_addr, value.dest_port),

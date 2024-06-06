@@ -30,9 +30,10 @@ use crate::capture_control::Command;
 use self::stream::HttpStream;
 
 const HELP: &str = r#"
-C:        Start capture
-S:        Stop capture
-Q:        Quit
+c:        Start capture
+s:        Stop capture
+p:        Save current stream to file
+q:        Quit
 "#;
 
 #[derive(Copy, Clone, PartialEq)]
@@ -132,16 +133,21 @@ impl State {
     fn handle_key_stream_list(&mut self, key_code: KeyCode) {
         match key_code {
             KeyCode::Up => {
-                table_move_up(&mut self.selected_stream);
+                table_move_up(&mut self.selected_stream, 1);
                 self.reset_scroll();
             }
             KeyCode::Down => {
-                table_move_down(&mut self.selected_stream, self.stream_items.len());
+                table_move_down(&mut self.selected_stream, 1, self.stream_items.len());
                 self.reset_scroll();
             }
+            KeyCode::PageUp => {
+                table_move_up(&mut self.selected_stream, 5);
+            }
+            KeyCode::PageDown => {
+                table_move_down(&mut self.selected_stream, 5, self.stream_items.len());
+            }
             KeyCode::Char('p') => {
-                self.save_http_stream("http-stream.txt");
-                self.status_line = "HTTP stream saved".to_string();
+                self.save_http_stream();
             }
             KeyCode::Tab => self.set_selected_window(SelectedWindow::PacketDetails),
             KeyCode::Char('q') => {
@@ -168,10 +174,10 @@ impl State {
                 self.set_selected_window(SelectedWindow::PacketList);
             }
             KeyCode::Up => {
-                list_move_up(&mut self.selected_device);
+                list_move_up(&mut self.selected_device, 1);
             }
             KeyCode::Down => {
-                list_move_down(&mut self.selected_device, self.devices.len());
+                list_move_down(&mut self.selected_device, 1, self.devices.len());
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if let Some(dev) = self.get_selected_device_name() {
@@ -232,6 +238,7 @@ impl State {
         let stream_list = Table::new(
             self.stream_items.clone(),
             vec![
+                Constraint::Length(6),
                 Constraint::Length(12),
                 Constraint::Length(20),
                 Constraint::Length(20),
@@ -239,7 +246,7 @@ impl State {
             ],
         )
         .header(
-            Row::new(vec!["Timestamp", "Source", "Destination", "Path"])
+            Row::new(vec!["Seq", "Timestamp", "Source", "Destination", "Path"])
                 .style(Style::new().fg(Color::White).add_modifier(Modifier::BOLD)),
         )
         .block(
@@ -266,6 +273,7 @@ impl State {
 
         if let Some(selected) = &self.selected_stream.selected() {
             if let Some(selected_stream) = self.streams.get(*selected) {
+                // TODO should we put line numbers in the http info window?
                 selected_stream.write_to_text(&mut text);
             }
         }
@@ -358,14 +366,17 @@ impl State {
         self.streams.push(stream);
     }
 
-    pub fn save_http_stream(&mut self, file_name: &str) {
-        let f = File::create(file_name).unwrap();
-        let writer = BufWriter::new(f);
-
+    pub fn save_http_stream(&mut self) {
         if let Some(selected) = &self.selected_stream.selected() {
             if let Some(selected_stream) = self.streams.get(*selected) {
+                let file_name = format!("http-stream-{}.txt", selected_stream.id);
+                let f = File::create(file_name.clone()).unwrap();
+                let writer = BufWriter::new(f);
+
                 if let Err(e) = selected_stream.write_to_file(writer) {
                     self.status_line = format!("Error saving stream: {}", e);
+                } else {
+                    self.status_line = format!("Stream saved to {}", file_name);
                 }
             }
         }
@@ -450,40 +461,40 @@ pub fn run_app<B: Backend>(
     }
 }
 
-fn list_move_up(list_state: &mut ListState) {
-    list_state.select(move_up(list_state.selected()));
+fn list_move_up(list_state: &mut ListState, inc: usize) {
+    list_state.select(move_up(list_state.selected(), inc));
 }
 
-fn list_move_down(list_state: &mut ListState, len: usize) {
-    list_state.select(move_down(list_state.selected(), len));
+fn list_move_down(list_state: &mut ListState, inc: usize, len: usize) {
+    list_state.select(move_down(list_state.selected(), inc, len));
 }
 
-fn table_move_up(tbl_state: &mut TableState) {
-    tbl_state.select(move_up(tbl_state.selected()));
+fn table_move_up(tbl_state: &mut TableState, inc: usize) {
+    tbl_state.select(move_up(tbl_state.selected(), inc));
 }
 
-fn table_move_down(tbl_state: &mut TableState, len: usize) {
-    tbl_state.select(move_down(tbl_state.selected(), len));
+fn table_move_down(tbl_state: &mut TableState, inc: usize, len: usize) {
+    tbl_state.select(move_down(tbl_state.selected(), inc, len));
 }
 
-fn move_up(pos: Option<usize>) -> Option<usize> {
+fn move_up(pos: Option<usize>, inc: usize) -> Option<usize> {
     if let Some(p) = pos {
-        if p == 0 {
+        if p <= inc {
             Some(0)
         } else {
-            Some(p - 1)
+            Some(p - inc)
         }
     } else {
         Some(0)
     }
 }
 
-fn move_down(pos: Option<usize>, len: usize) -> Option<usize> {
+fn move_down(pos: Option<usize>, inc: usize, len: usize) -> Option<usize> {
     if let Some(p) = pos {
-        if p + 1 == len {
-            Some(p)
+        if p + inc >= len {
+            Some(len - 1)
         } else {
-            Some(p + 1)
+            Some(p + inc)
         }
     } else {
         Some(0)

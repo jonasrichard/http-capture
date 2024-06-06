@@ -26,4 +26,6 @@ On Mac M architecture
 ```
 docker build -f Dockerfile.centos7 . -t capture-builder:centos7
 docker run -ti --rm --platform linux/amd64 -v $PWD:/rust capture-builder:centos7 bash
+
+cargo build --target-dir target-linux --release
 ```

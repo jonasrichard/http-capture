@@ -174,7 +174,7 @@ fn packet_stream(mut cap: Capture<Active>, loopback: bool) -> Receiver<FilteredS
 
         while let Ok(packet) = cap.next_packet() {
             //hexdump(packet.data);
-            info!("Packet {:?}", packet.header);
+            //info!("Packet {:?}", packet.header);
 
             let ts = packet.header.ts.tv_sec;
 
