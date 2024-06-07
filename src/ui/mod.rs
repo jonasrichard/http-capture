@@ -150,9 +150,6 @@ impl State {
                 self.save_http_stream();
             }
             KeyCode::Tab => self.set_selected_window(SelectedWindow::PacketDetails),
-            KeyCode::Char('q') => {
-                // TODO quit, stop capturing, join to ui_handle
-            }
             _ => {}
         }
     }
@@ -183,7 +180,6 @@ impl State {
                 if let Some(dev) = self.get_selected_device_name() {
                     self.set_selected_window(SelectedWindow::PacketList);
                     self.set_capture_state(CaptureState::Active);
-                    // TODO in the layout we can have some minibuffer for the messages
                     self.commands
                         .send(Command::StartCapture(dev.to_string()))
                         .unwrap();

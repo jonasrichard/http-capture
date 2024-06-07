@@ -82,9 +82,8 @@ impl TcpStream {
         loop {
             if let Ok(parsed_request) = parse_request(&mut self.request) {
                 if let Ok(parsed_response) = parse_response(&mut self.response) {
-                    // TODO here we should correctly id the streams
                     let stream = HttpStream {
-                        id: self.id,
+                        id: streams.len() + 1,
                         timestamp: self.timestamp,
                         source_addr: self.source.endpoint.address,
                         source_port: self.source.endpoint.port,
