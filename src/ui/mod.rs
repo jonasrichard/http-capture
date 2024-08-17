@@ -198,7 +198,7 @@ impl State {
                 Constraint::Percentage(50),
                 Constraint::Length(1),
             ])
-            .split(f.size());
+            .split(f.area());
 
         self.stream_list_draw_ui(f, parent_chunk[0]);
         self.stream_info_draw_ui(f, parent_chunk[1]);
