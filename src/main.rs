@@ -1,11 +1,10 @@
 use chrono::Local;
 use crossbeam::channel;
 use crossterm::{
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, LeaveAlternateScreen},
     ExecutableCommand,
 };
 use log::{info, Level, LevelFilter, Log};
-use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{
     fs::File,
     io::{stdout, Result, Write},
@@ -31,10 +30,8 @@ struct FileLog {
 fn main() -> Result<()> {
     setup_logger();
 
-    stdout().execute(EnterAlternateScreen)?;
-    enable_raw_mode()?;
+    let mut terminal = ratatui::init();
 
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
 
     let (http_tx, http_rx) = channel::bounded(32);
@@ -57,7 +54,7 @@ fn main() -> Result<()> {
         eprintln!("{e}");
     }
 
-    capture_handle.join().unwrap();
+    ratatui::restore();
 
     Ok(())
 }
